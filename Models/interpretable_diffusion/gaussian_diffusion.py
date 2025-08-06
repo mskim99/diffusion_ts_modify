@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 from torch import nn
 from einops import reduce
@@ -9,6 +10,7 @@ from functools import partial
 from Models.interpretable_diffusion.transformer import Transformer
 from Models.interpretable_diffusion.model_utils import default, identity, extract
 
+from fastdtw import fastdtw
 
 # gaussian diffusion trainer class
 
@@ -35,7 +37,9 @@ def cosine_beta_schedule(timesteps, s=0.008):
 class Diffusion_TS(nn.Module):
     def __init__(
             self,
+            for_trend,
             seq_length,
+            gt_input_length,
             feature_size,
             n_layer_enc=3,
             n_layer_dec=6,
@@ -52,17 +56,18 @@ class Diffusion_TS(nn.Module):
             kernel_size=None,
             padding_size=None,
             use_ff=True,
+            use_dwt=False,
             reg_weight=None,
             **kwargs
     ):
         super(Diffusion_TS, self).__init__()
 
-        self.eta, self.use_ff = eta, use_ff
+        self.eta, self.use_ff, self.use_dwt, self.for_trend = eta, use_ff, use_dwt, for_trend
         self.seq_length = seq_length
         self.feature_size = feature_size
         self.ff_weight = default(reg_weight, math.sqrt(self.seq_length) / 5)
 
-        self.model = Transformer(n_feat=feature_size, n_channel=seq_length, n_layer_enc=n_layer_enc, n_layer_dec=n_layer_dec,
+        self.model = Transformer(n_feat=feature_size, n_channel=seq_length, input_length=gt_input_length, for_trend=for_trend, n_layer_enc=n_layer_enc, n_layer_dec=n_layer_dec,
                                  n_heads=n_heads, attn_pdrop=attn_pd, resid_pdrop=resid_pd, mlp_hidden_times=mlp_hidden_times,
                                  max_len=seq_length, n_embd=d_model, conv_params=[kernel_size, padding_size], **kwargs)
 
@@ -149,29 +154,30 @@ class Diffusion_TS(nn.Module):
         model_output = trend + season
         return model_output
 
-    def model_predictions(self, x, t, clip_x_start=False, padding_masks=None):
+    def model_predictions(self, x, t, idx=None, clip_x_start=False, padding_masks=None):
         if padding_masks is None:
             padding_masks = torch.ones(x.shape[0], self.seq_length, dtype=bool, device=x.device)
 
         maybe_clip = partial(torch.clamp, min=-1., max=1.) if clip_x_start else identity
-        x_start = self.output(x, t, padding_masks)
+        # x_start = self.output(x, t, padding_masks)
+        x_start = self.model(x, t, idx, padding_masks=padding_masks)
         x_start = maybe_clip(x_start)
         pred_noise = self.predict_noise_from_start(x, t, x_start)
         return pred_noise, x_start
 
-    def p_mean_variance(self, x, t, clip_denoised=True):
-        _, x_start = self.model_predictions(x, t)
+    def p_mean_variance(self, x, t, idx, clip_denoised=True):
+        _, x_start = self.model_predictions(x, t, idx)
         if clip_denoised:
             x_start.clamp_(-1., 1.)
         model_mean, posterior_variance, posterior_log_variance = \
             self.q_posterior(x_start=x_start, x_t=x, t=t)
         return model_mean, posterior_variance, posterior_log_variance, x_start
     
-    def p_sample(self, x, t: int, clip_denoised=True, cond_fn=None, model_kwargs=None):
+    def p_sample(self, x, t: int, idx=None, clip_denoised=True, cond_fn=None, model_kwargs=None):
         b, *_, device = *x.shape, self.betas.device
         batched_times = torch.full((x.shape[0],), t, device=x.device, dtype=torch.long)
         model_mean, _, model_log_variance, x_start = \
-            self.p_mean_variance(x=x, t=batched_times, clip_denoised=clip_denoised)
+            self.p_mean_variance(x=x, t=batched_times, idx=idx, clip_denoised=clip_denoised)
         noise = torch.randn_like(x) if t > 0 else 0.  # no noise if t == 0
         if cond_fn is not None:
             model_mean = self.condition_mean(
@@ -181,12 +187,12 @@ class Diffusion_TS(nn.Module):
         return pred_series, x_start
 
     @torch.no_grad()
-    def sample(self, shape):
+    def sample(self, shape, idx):
         device = self.betas.device
         img = torch.randn(shape, device=device)
         for t in tqdm(reversed(range(0, self.num_timesteps)),
                       desc='sampling loop time step', total=self.num_timesteps):
-            img, _ = self.p_sample(img, t)
+            img, _ = self.p_sample(img, t, idx)
         return img
 
     @torch.no_grad()
@@ -220,13 +226,13 @@ class Diffusion_TS(nn.Module):
 
         return img
     
-    def generate_mts(self, batch_size=16, model_kwargs=None, cond_fn=None):
+    def generate_mts(self, batch_size=16, idx=None, model_kwargs=None, cond_fn=None):
         feature_size, seq_length = self.feature_size, self.seq_length
         if cond_fn is not None:
             sample_fn = self.fast_sample_cond if self.fast_sampling else self.sample_cond
-            return sample_fn((batch_size, seq_length, feature_size), model_kwargs=model_kwargs, cond_fn=cond_fn)
+            return sample_fn((batch_size, seq_length, feature_size), idx=idx, model_kwargs=model_kwargs, cond_fn=cond_fn)
         sample_fn = self.fast_sample if self.fast_sampling else self.sample
-        return sample_fn((batch_size, seq_length, feature_size))
+        return sample_fn((batch_size, seq_length, feature_size), idx=idx)
 
     @property
     def loss_fn(self):
@@ -244,13 +250,16 @@ class Diffusion_TS(nn.Module):
                 extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
-    def _train_loss(self, x_start, t, target=None, noise=None, padding_masks=None):
+    def _train_loss(self, x_start, t, index, target=None, noise=None, padding_masks=None, out_result=False):
         noise = default(noise, lambda: torch.randn_like(x_start))
         if target is None:
             target = x_start
 
         x = self.q_sample(x_start=x_start, t=t, noise=noise)  # noise sample
-        model_out = self.output(x, t, padding_masks)
+        model_out = self.model(x, t, index=index, padding_masks=padding_masks)
+
+        if out_result:
+            return model_out
 
         train_loss = self.loss_fn(model_out, target, reduction='none')
 
@@ -262,16 +271,24 @@ class Diffusion_TS(nn.Module):
             fourier_loss = self.loss_fn(torch.real(fft1), torch.real(fft2), reduction='none')\
                            + self.loss_fn(torch.imag(fft1), torch.imag(fft2), reduction='none')
             train_loss +=  self.ff_weight * fourier_loss
-        
+
+        dwt_loss = 0.
+        if self.use_dwt:
+            distance, path = fastdtw(model_out.detach().cpu().numpy(), target.detach().cpu().numpy())
+            K = len(path)
+            if K != 0:
+                dwt_loss = distance / K
+                train_loss += dwt_loss
+
         train_loss = reduce(train_loss, 'b ... -> b (...)', 'mean')
         train_loss = train_loss * extract(self.loss_weight, t, train_loss.shape)
-        return train_loss.mean()
+        return train_loss.mean(), fourier_loss.mean(), dwt_loss
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, index, **kwargs):
         b, c, n, device, feature_size, = *x.shape, x.device, self.feature_size
         assert n == feature_size, f'number of variable must be {feature_size}'
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
-        return self._train_loss(x_start=x, t=t, **kwargs)
+        return self._train_loss(x_start=x, t=t, index=index, **kwargs)
 
     def return_components(self, x, t: int):
         b, c, n, device, feature_size, = *x.shape, x.device, self.feature_size

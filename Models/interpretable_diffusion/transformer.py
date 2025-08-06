@@ -8,6 +8,21 @@ from einops import rearrange, reduce, repeat
 from Models.interpretable_diffusion.model_utils import LearnablePositionalEncoding, Conv_MLP,\
                                                        AdaLayerNorm, Transpose, GELU2, series_decomp
 
+class IndexConditionedEmbedding(nn.Module):
+    def __init__(self, num_classes, embedding_dim):
+        super().__init__()
+        self.class_embedding = nn.Embedding(num_classes, embedding_dim)
+        self.linear_proj = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim),
+            nn.SiLU(),
+            nn.Linear(embedding_dim, embedding_dim),
+        )
+
+    def forward(self, class_index):
+        # class_index: (batch_size,) 또는 (batch_size, 1)
+        emb = self.class_embedding(class_index)  # shape: (batch_size, embedding_dim)
+        emb = self.linear_proj(emb)  # optional: refine with MLP
+        return emb
 
 class TrendBlock(nn.Module):
     """
@@ -261,8 +276,13 @@ class Encoder(nn.Module):
                 activate=block_activate,
         ) for _ in range(n_layer)])
 
-    def forward(self, input, t, padding_masks=None, label_emb=None):
+    def forward(self, input, t, index_emb, padding_masks=None, label_emb=None):
         x = input
+
+        if index_emb is not None:
+            # index_emb: [B, D] → [B, 1, D] → broadcast over time
+            x = x + index_emb.unsqueeze(1)
+
         for block_idx in range(len(self.blocks)):
             x, _ = self.blocks[block_idx](x, t, mask=padding_masks, label_emb=label_emb)
         return x
@@ -273,6 +293,7 @@ class DecoderBlock(nn.Module):
     def __init__(self,
                  n_channel,
                  n_feat,
+                 for_trend,
                  n_embd=1024,
                  n_head=16,
                  attn_pdrop=0.1,
@@ -305,10 +326,10 @@ class DecoderBlock(nn.Module):
         assert activate in ['GELU', 'GELU2']
         act = nn.GELU() if activate == 'GELU' else GELU2()
 
-        self.trend = TrendBlock(n_channel, n_channel, n_embd, n_feat, act=act)
-        # self.decomp = MovingBlock(n_channel)
-        self.seasonal = FourierLayer(d_model=n_embd)
-        # self.seasonal = SeasonBlock(n_channel, n_channel)
+        if for_trend:
+            self.mainblock = TrendBlock(n_channel, n_channel, n_embd, n_embd, act=act)
+        else:
+            self.mainblock = FourierLayer(d_model=n_embd)
 
         self.mlp = nn.Sequential(
             nn.Linear(n_embd, mlp_hidden_times * n_embd),
@@ -317,19 +338,27 @@ class DecoderBlock(nn.Module):
             nn.Dropout(resid_pdrop),
         )
 
-        self.proj = nn.Conv1d(n_channel, n_channel * 2, 1)
+        # self.proj = nn.Conv1d(n_channel, n_channel * 2, 1)
         self.linear = nn.Linear(n_embd, n_feat)
 
-    def forward(self, x, encoder_output, timestep, mask=None, label_emb=None):
+    def forward(self, x, encoder_output, timestep, mask=None, label_emb=None, index_emb=None):
+
+        if index_emb is not None:
+            # index_emb: [B, D] → [B, 1, D] → broadcast
+            x = x + index_emb.unsqueeze(1)
+
         a, att = self.attn1(self.ln1(x, timestep, label_emb), mask=mask)
         x = x + a
         a, att = self.attn2(self.ln1_1(x, timestep), encoder_output, mask=mask)
         x = x + a
-        x1, x2 = self.proj(x).chunk(2, dim=1)
-        trend, season = self.trend(x1), self.seasonal(x2)
-        x = x + self.mlp(self.ln2(x))
+        # x1, x2 = self.proj(x).chunk(2, dim=1)
+        # trend, season = self.trend(x1), self.seasonal(x2)
+        x = self.mainblock(x)
+        # xln2 = self.ln2(x)
+        # x = x + self.mlp(xln2)
+        x = self.mlp(self.ln2(x))
         m = torch.mean(x, dim=1, keepdim=True)
-        return x - m, self.linear(m), trend, season
+        return x - m, self.linear(m)
     
 
 class Decoder(nn.Module):
@@ -337,6 +366,7 @@ class Decoder(nn.Module):
         self,
         n_channel,
         n_feat,
+        for_trend,
         n_embd=1024,
         n_head=16,
         n_layer=10,
@@ -352,6 +382,7 @@ class Decoder(nn.Module):
       self.blocks = nn.Sequential(*[DecoderBlock(
                 n_feat=n_feat,
                 n_channel=n_channel,
+                for_trend=for_trend,
                 n_embd=n_embd,
                 n_head=n_head,
                 attn_pdrop=attn_pdrop,
@@ -361,21 +392,17 @@ class Decoder(nn.Module):
                 condition_dim=condition_dim,
         ) for _ in range(n_layer)])
       
-    def forward(self, x, t, enc, padding_masks=None, label_emb=None):
+    def forward(self, x, t, enc, padding_masks=None, label_emb=None, index_emb=None):
         b, c, _ = x.shape
         # att_weights = []
         mean = []
-        season = torch.zeros((b, c, self.d_model), device=x.device)
-        trend = torch.zeros((b, c, self.n_feat), device=x.device)
         for block_idx in range(len(self.blocks)):
-            x, residual_mean, residual_trend, residual_season = \
-                self.blocks[block_idx](x, enc, t, mask=padding_masks, label_emb=label_emb)
-            season += residual_season
-            trend += residual_trend
+            x, residual_mean = \
+                self.blocks[block_idx](x, enc, t, mask=padding_masks, label_emb=label_emb, index_emb=index_emb)
             mean.append(residual_mean)
 
         mean = torch.cat(mean, dim=1)
-        return x, mean, trend, season
+        return x, mean
 
 
 class Transformer(nn.Module):
@@ -383,6 +410,8 @@ class Transformer(nn.Module):
         self,
         n_feat,
         n_channel,
+        input_length,
+        for_trend,
         n_layer_enc=5,
         n_layer_dec=14,
         n_embd=1024,
@@ -396,8 +425,13 @@ class Transformer(nn.Module):
         **kwargs
     ):
         super().__init__()
+
+        self.for_trend = for_trend
+
         self.emb = Conv_MLP(n_feat, n_embd, resid_pdrop=resid_pdrop)
         self.inverse = Conv_MLP(n_embd, n_feat, resid_pdrop=resid_pdrop)
+
+        self.idx_emb = IndexConditionedEmbedding(int(input_length//n_channel)+1, 64)
 
         if conv_params is None or conv_params[0] is None:
             if n_feat < 32 and n_channel < 64:
@@ -407,35 +441,45 @@ class Transformer(nn.Module):
         else:
             kernel_size, padding = conv_params
 
+        '''
         self.combine_s = nn.Conv1d(n_embd, n_feat, kernel_size=kernel_size, stride=1, padding=padding,
                                    padding_mode='circular', bias=False)
-        self.combine_m = nn.Conv1d(n_layer_dec, 1, kernel_size=1, stride=1, padding=0,
+        '''
+        self.combine = nn.Conv1d(n_layer_dec, 1, kernel_size=1, stride=1, padding=0,
                                    padding_mode='circular', bias=False)
 
         self.encoder = Encoder(n_layer_enc, n_embd, n_heads, attn_pdrop, resid_pdrop, mlp_hidden_times, block_activate)
         self.pos_enc = LearnablePositionalEncoding(n_embd, dropout=resid_pdrop, max_len=max_len)
 
-        self.decoder = Decoder(n_channel, n_feat, n_embd, n_heads, n_layer_dec, attn_pdrop, resid_pdrop, mlp_hidden_times,
+        self.decoder = Decoder(n_channel, n_feat, for_trend, n_embd, n_heads, n_layer_dec, attn_pdrop, resid_pdrop, mlp_hidden_times,
                                block_activate, condition_dim=n_embd)
         self.pos_dec = LearnablePositionalEncoding(n_embd, dropout=resid_pdrop, max_len=max_len)
 
-    def forward(self, input, t, padding_masks=None, return_res=False):
+    def forward(self, input, t, index=None, padding_masks=None, return_res=False):
         emb = self.emb(input)
         inp_enc = self.pos_enc(emb)
-        enc_cond = self.encoder(inp_enc, t, padding_masks=padding_masks)
+
+        if index is not None:
+            index_emb = self.idx_emb(index)  # shape: [B, D]
+        else:
+            index_emb = None
+
+        enc_cond = self.encoder(inp_enc, t, index_emb=index_emb, padding_masks=padding_masks)
 
         inp_dec = self.pos_dec(emb)
-        output, mean, trend, season = self.decoder(inp_dec, t, enc_cond, padding_masks=padding_masks)
+        output, mean = self.decoder(inp_dec, t, enc_cond, index_emb=index_emb, padding_masks=padding_masks)
 
         res = self.inverse(output)
         res_m = torch.mean(res, dim=1, keepdim=True)
-        season_error = self.combine_s(season.transpose(1, 2)).transpose(1, 2) + res - res_m
-        trend = self.combine_m(mean) + res_m + trend
 
-        if return_res:
-            return trend, self.combine_s(season.transpose(1, 2)).transpose(1, 2), res - res_m
+        if self.for_trend:
+            res = self.combine(mean) + res + res_m
+        else:
+            res = self.combine(mean) + res - res_m
 
-        return trend, season_error
+        # res = torch.tanh(res)
+
+        return res
 
 
 if __name__ == '__main__':

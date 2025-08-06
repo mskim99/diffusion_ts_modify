@@ -2,6 +2,7 @@ import os
 import torch
 import argparse
 import numpy as np
+import math
 
 from engine.logger import Logger
 from engine.solver import Trainer
@@ -66,14 +67,21 @@ def main():
     logger = Logger(args)
     logger.save_config(config)
 
-    model = instantiate_from_config(config['model']).cuda()
+    model_trend = instantiate_from_config(config['model_tr']).cuda()
+    model_season = instantiate_from_config(config['model_se']).cuda()
     if args.sample == 1 and args.mode in ['infill', 'predict']:
         test_dataloader_info = build_dataloader_cond(config, args)
     dataloader_info = build_dataloader(config, args)
-    trainer = Trainer(config=config, args=args, model=model, dataloader=dataloader_info, logger=logger)
+    trainer = Trainer(config=config, args=args, model_trend=model_trend, model_season=model_season, dataloader=dataloader_info, logger=logger)
 
     if args.train:
-        trainer.train()
+        # trainer.train()
+        if args.mode in ['finetune']:
+            trainer.load(args.milestone)
+            trainer.train_finetune()
+        else:
+            trainer.train()
+            # trainer.train_sap()
     elif args.sample == 1 and args.mode in ['infill', 'predict']:
         trainer.load(args.milestone)
         dataloader, dataset = test_dataloader_info['dataloader'], test_dataloader_info['dataset']
@@ -86,13 +94,31 @@ def main():
             # samples = dataset.scaler.inverse_transform(samples.reshape(-1, samples.shape[-1])).reshape(samples.shape)
         np.save(os.path.join(args.save_dir, f'ddpm_{args.mode}_{args.name}.npy'), samples)
     else:
-        trainer.load(args.milestone)
+        if args.mode in ['finetune']:
+            trainer.load(args.milestone)
+        else:
+            trainer.load(args.milestone)
         dataset = dataloader_info['dataset']
-        samples = trainer.sample(num=len(dataset), size_every=2001, shape=[dataset.window, dataset.var_num])
+        samples, trends, seasons = trainer.sample(num=20, size_every=dataset.window, shape=[dataset.window, dataset.var_num],
+                                                  norm_factor=[dataset.t_min, dataset.t_max, dataset.s_min, dataset.s_max])
+        # _, trends, seasons = trainer.sample_idx_emb(num=dataset.len, size_every=dataset.window, shape=[dataset.window, dataset.var_num])
+
+        '''
         if dataset.auto_norm:
             samples = unnormalize_to_zero_to_one(samples)
+            trends = unnormalize_to_zero_to_one(trends)
+            seasons = unnormalize_to_zero_to_one(seasons)
             # samples = dataset.scaler.inverse_transform(samples.reshape(-1, samples.shape[-1])).reshape(samples.shape)
-        np.save(os.path.join(args.save_dir, f'ddpm_fake_{args.name}.npy'), samples)
+        '''
+
+        if args.mode in ['finetune']:
+            np.save(os.path.join(args.save_dir, f'ddpm_{args.mode}_fake_{args.name}.npy'), samples)
+            np.save(os.path.join(args.save_dir, f'ddpm_{args.mode}_fake_{args.name}_trend.npy'), trends)
+            np.save(os.path.join(args.save_dir, f'ddpm_{args.mode}_fake_{args.name}_season.npy'), seasons)
+        else:
+            np.save(os.path.join(args.save_dir, f'ddpm_fake_{args.name}.npy'), samples)
+            np.save(os.path.join(args.save_dir, f'ddpm_fake_{args.name}_trend.npy'), trends)
+            np.save(os.path.join(args.save_dir, f'ddpm_fake_{args.name}_season.npy'), seasons)
 
 if __name__ == '__main__':
     main()

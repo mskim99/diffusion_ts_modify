@@ -80,15 +80,15 @@ class CustomDataset(Dataset):
         if self.save2npy:
             if 1 - proportion > 0:
                 np.save(os.path.join(self.dir, f"{self.name}_ground_truth_{self.window}_test.npy"),
-                        self.unnormalize(test_data[0]))
+                        self.unnormalize(test_data[0].copy()))
             np.save(os.path.join(self.dir, f"{self.name}_ground_truth_{self.window}_train.npy"),
-                    self.unnormalize(train_data[0]))
+                    self.unnormalize(train_data[0].copy()))
             if self.auto_norm:
                 if 1 - proportion > 0:
                     np.save(os.path.join(self.dir, f"{self.name}_norm_truth_{self.window}_test.npy"),
-                            unnormalize_to_zero_to_one(test_data[0]))
+                            unnormalize_to_zero_to_one(test_data[0].copy()))
                 np.save(os.path.join(self.dir, f"{self.name}_norm_truth_{self.window}_train.npy"),
-                        unnormalize_to_zero_to_one(train_data[0]))
+                        unnormalize_to_zero_to_one(train_data[0].copy()))
             else:
                 if 1 - proportion > 0:
                     np.save(os.path.join(self.dir, f"{self.name}_norm_truth_{self.window}_test.npy"), test_data[0])
@@ -105,12 +105,13 @@ class CustomDataset(Dataset):
 
     def unnormalize(self, sq):
         d = self.__unnormalize(sq.reshape(-1, self.var_num))
-        return d.reshape(-1, self.window, self.var_num)
+        # return d.reshape(-1, self.window, self.var_num)
+        return d
 
     def __normalize(self, rawdatas):
         datas = []
         for rawdata in rawdatas:
-            data = self.scaler.transform(rawdata)
+            data = self.scaler.fit_transform(rawdata)
             if self.auto_norm:
                 data = normalize_to_neg_one_to_one(data)
             datas.append(data)
@@ -181,7 +182,7 @@ class CustomDataset(Dataset):
         np.random.seed(seed)
 
         sample_len = self.samples[0].shape[0]
-        rand_num = np.random.randint(0, int(sample_len/self.window) + 1)
+        rand_num = np.random.randint(0, int(sample_len/self.window))
 
         if self.period == 'test':
             x = self.samples[ind]  # (seq_length, feat_dim) array

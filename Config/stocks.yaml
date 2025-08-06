@@ -1,7 +1,9 @@
-model:
+model_tr:
   target: Models.interpretable_diffusion.gaussian_diffusion.Diffusion_TS
   params:
+    for_trend: True
     seq_length: 24
+    gt_input_length: 3662
     feature_size: 6
     n_layer_enc: 2
     n_layer_dec: 2
@@ -16,12 +18,35 @@ model:
     resid_pd: 0.0
     kernel_size: 1
     padding_size: 0
+    use_ff: False
+
+model_se:
+  target: Models.interpretable_diffusion.gaussian_diffusion.Diffusion_TS
+  params:
+    for_trend: False
+    seq_length: 24
+    gt_input_length: 3662
+    feature_size: 6
+    n_layer_enc: 2
+    n_layer_dec: 2
+    d_model: 64  # 4 X 16
+    timesteps: 500
+    sampling_timesteps: 500
+    loss_type: 'l1'
+    beta_schedule: 'cosine'
+    n_heads: 4
+    mlp_hidden_times: 4
+    attn_pd: 0.0
+    resid_pd: 0.0
+    kernel_size: 1`
+    padding_size: 0
+    use_ff: True
 
 solver:
   base_lr: 1.0e-5
-  max_epochs: 10000
-  results_folder: ./Checkpoints_stock
-  gradient_accumulate_every: 2
+  max_epochs: 40000
+  results_folder: ./Checkpoints_stock_nie2
+  gradient_accumulate_every: 1
   save_cycle: 1000  # max_epochs // 10
   ema:
     decay: 0.995
@@ -45,10 +70,11 @@ dataloader:
     params:
       name: stock
       proportion: 1.0  # Set to rate < 1 if training conditional generation
-      data_root: ./Data/datasets/stock_data.csv
+      trend_data: ./Data/datasets_pair/stock_gt_trend_moo.npy
+      season_data: ./Data/datasets_pair/stock_gt_season_moo.npy
       window: 24  # seq_length
       save2npy: True
-      neg_one_to_one: True
+      neg_one_to_one: False
       seed: 123
       period: train
 
@@ -57,10 +83,11 @@ dataloader:
     params:
       name: stock
       proportion: 0.9  # rate
-      data_root: ./Data/datasets/stock_data.csv
+      trend_data: ./Data/datasets_pair/stock_gt_trend_moo.npy
+      season_data: ./Data/datasets_pair/stock_gt_season_moo.npy
       window: 24  # seq_length
       save2npy: True
-      neg_one_to_one: True
+      neg_one_to_one: False
       seed: 123
       period: test
       style: separate
@@ -69,6 +96,6 @@ dataloader:
     step_size: 5.0e-2
     sampling_steps: 200
 
-  batch_size: 64
+  batch_size: 1
   sample_size: 256
   shuffle: True

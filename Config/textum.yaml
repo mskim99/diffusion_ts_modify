@@ -20,9 +20,9 @@ model:
 solver:
   base_lr: 2.5e-5
   max_epochs: 100000
-  results_folder: ./Checkpoints_textum_multi
+  results_folder: ./Checkpoints_textum_multi2
   gradient_accumulate_every: 2
-  save_cycle: 2500  # max_epochs // 10
+  save_cycle: 2500
   ema:
     decay: 0.995
     update_interval: 10
@@ -45,7 +45,7 @@ dataloader:
     params:
       name: textum
       proportion: 1.0  # Set to rate < 1 if training conditional generation
-      data_root: ./Data/datasets/textum_accum_48k_5/*.npy
+      data_root: ./Data/datasets/textum_test/G1EpoxyRasterPlate_train1_accum_48K_5.npy
       window: 24  # seq_length
       save2npy: True
       neg_one_to_one: True
@@ -57,7 +57,7 @@ dataloader:
     params:
       name: textum
       proportion: 0.9  # rate
-      data_root: ./Data/datasets/textum_accum_48k_5/*.npy
+      data_root: ./Data/datasets/textum_test/G1EpoxyRasterPlate_train1_accum_48K_5.npy
       window: 24  # seq_length
       save2npy: True
       neg_one_to_one: True
