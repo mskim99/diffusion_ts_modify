@@ -7,7 +7,8 @@ from torch import nn
 from einops import reduce
 from tqdm.auto import tqdm
 from functools import partial
-from Models.interpretable_diffusion.transformer import Transformer
+from Models.interpretable_diffusion.transformer_trend import TransformerT
+from Models.interpretable_diffusion.transformer_season import TransformerS
 from Models.interpretable_diffusion.model_utils import default, identity, extract
 
 from fastdtw import fastdtw
@@ -67,9 +68,20 @@ class Diffusion_TS(nn.Module):
         self.feature_size = feature_size
         self.ff_weight = default(reg_weight, math.sqrt(self.seq_length) / 5)
 
-        self.model = Transformer(n_feat=feature_size, n_channel=seq_length, input_length=gt_input_length, for_trend=for_trend, n_layer_enc=n_layer_enc, n_layer_dec=n_layer_dec,
-                                 n_heads=n_heads, attn_pdrop=attn_pd, resid_pdrop=resid_pd, mlp_hidden_times=mlp_hidden_times,
-                                 max_len=seq_length, n_embd=d_model, conv_params=[kernel_size, padding_size], **kwargs)
+        if self.for_trend:
+            self.model = TransformerT(n_feat=feature_size, n_channel=seq_length, input_length=gt_input_length,
+                                      for_trend=for_trend, n_layer_enc=n_layer_enc, n_layer_dec=n_layer_dec,
+                                      n_heads=n_heads, attn_pdrop=attn_pd, resid_pdrop=resid_pd,
+                                      mlp_hidden_times=mlp_hidden_times,
+                                      max_len=seq_length, n_embd=d_model, conv_params=[kernel_size, padding_size],
+                                      **kwargs)
+        else:
+            self.model = TransformerS(n_feat=feature_size, n_channel=seq_length, input_length=gt_input_length,
+                                      for_trend=for_trend, n_layer_enc=n_layer_enc, n_layer_dec=n_layer_dec,
+                                      n_heads=n_heads, attn_pdrop=attn_pd, resid_pdrop=resid_pd,
+                                      mlp_hidden_times=mlp_hidden_times,
+                                      max_len=seq_length, n_embd=d_model, conv_params=[kernel_size, padding_size],
+                                      **kwargs)
 
         if beta_schedule == 'linear':
             betas = linear_beta_schedule(timesteps)

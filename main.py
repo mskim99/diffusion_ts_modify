@@ -99,9 +99,15 @@ def main():
         else:
             trainer.load(args.milestone)
         dataset = dataloader_info['dataset']
+
+        '''
         samples, trends, seasons = trainer.sample(num=20, size_every=dataset.window, shape=[dataset.window, dataset.var_num],
                                                   norm_factor=[dataset.t_min, dataset.t_max, dataset.s_min, dataset.s_max])
-        # _, trends, seasons = trainer.sample_idx_emb(num=dataset.len, size_every=dataset.window, shape=[dataset.window, dataset.var_num])
+        '''
+        samples, trends, seasons = trainer.sample(num=20, size_every=dataset.window,shape=[dataset.window, dataset.var_num],
+                                                  norm_factor=None)
+        # samples, trends, seasons = trainer.sample(num=20, size_every=dataset.window, shape=[dataset.window, dataset.var_num], norm_factor=None)
+
 
         '''
         if dataset.auto_norm:

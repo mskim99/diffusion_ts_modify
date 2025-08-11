@@ -44,8 +44,8 @@ model_se:
 
 solver:
   base_lr: 1.0e-5
-  max_epochs: 40000
-  results_folder: ./Checkpoints_stock_nie2
+  max_epochs: 10000
+  results_folder: ./Checkpoints_stock_nie_st_sap_lr_1e_5
   gradient_accumulate_every: 1
   save_cycle: 1000  # max_epochs // 10
   ema:
@@ -56,7 +56,7 @@ solver:
     target: engine.lr_sch.ReduceLROnPlateauWithWarmup
     params:
       factor: 0.5
-      patience: 2000
+      patience: 20002
       min_lr: 1.0e-5
       threshold: 1.0e-1
       threshold_mode: rel
@@ -96,6 +96,6 @@ dataloader:
     step_size: 5.0e-2
     sampling_steps: 200
 
-  batch_size: 1
+  batch_size: 64
   sample_size: 256
   shuffle: True

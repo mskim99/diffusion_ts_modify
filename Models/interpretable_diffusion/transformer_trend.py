@@ -5,8 +5,9 @@ import torch.nn.functional as F
 
 from torch import nn
 from einops import rearrange, reduce, repeat
-from Models.interpretable_diffusion.model_utils import LearnablePositionalEncoding, Conv_MLP,\
-                                                       AdaLayerNorm, Transpose, GELU2, series_decomp
+from Models.interpretable_diffusion.model_utils import LearnablePositionalEncoding, Conv_MLP, \
+    AdaLayerNorm, Transpose, GELU2, series_decomp
+
 
 class IndexConditionedEmbedding(nn.Module):
     def __init__(self, num_classes, embedding_dim):
@@ -24,10 +25,12 @@ class IndexConditionedEmbedding(nn.Module):
         emb = self.linear_proj(emb)  # optional: refine with MLP
         return emb
 
+
 class TrendBlock(nn.Module):
     """
     Model trend of time series using the polynomial regressor.
     """
+
     def __init__(self, in_dim, out_dim, in_feat, out_feat, act):
         super(TrendBlock, self).__init__()
         trend_poly = 3
@@ -47,12 +50,13 @@ class TrendBlock(nn.Module):
         trend_vals = torch.matmul(x.transpose(1, 2), self.poly_space.to(x.device))
         trend_vals = trend_vals.transpose(1, 2)
         return trend_vals
-    
+
 
 class MovingBlock(nn.Module):
     """
     Model trend of time series using the moving average.
     """
+
     def __init__(self, out_dim):
         super(MovingBlock, self).__init__()
         size = max(min(int(out_dim / 4), 24), 4)
@@ -68,6 +72,7 @@ class FourierLayer(nn.Module):
     """
     Model seasonality of time series using the inverse DFT.
     """
+
     def __init__(self, d_model, low_freq=1, factor=1):
         super().__init__()
         self.d_model = d_model
@@ -110,12 +115,13 @@ class FourierLayer(nn.Module):
         index_tuple = (mesh_a.unsqueeze(1), indices, mesh_b.unsqueeze(1))
         x_freq = x_freq[index_tuple]
         return x_freq, index_tuple
-    
+
 
 class SeasonBlock(nn.Module):
     """
     Model seasonality of time series using the Fourier series.
     """
+
     def __init__(self, in_dim, out_dim, factor=1):
         super(SeasonBlock, self).__init__()
         season_poly = factor * min(32, int(out_dim // 2))
@@ -137,11 +143,11 @@ class SeasonBlock(nn.Module):
 
 class FullAttention(nn.Module):
     def __init__(self,
-                 n_embd, # the embed dim
-                 n_head, # the number of heads
-                 attn_pdrop=0.1, # attention dropout prob
-                 resid_pdrop=0.1, # residual attention dropout prob
-    ):
+                 n_embd,  # the embed dim
+                 n_head,  # the number of heads
+                 attn_pdrop=0.1,  # attention dropout prob
+                 resid_pdrop=0.1,  # residual attention dropout prob
+                 ):
         super().__init__()
         assert n_embd % n_head == 0
         # key, query, value projections for all heads
@@ -158,16 +164,16 @@ class FullAttention(nn.Module):
 
     def forward(self, x, mask=None):
         B, T, C = x.size()
-        k = self.key(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1))) # (B, nh, T, T)
+        k = self.key(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # (B, nh, T, T)
 
-        att = F.softmax(att, dim=-1) # (B, nh, T, T)
+        att = F.softmax(att, dim=-1)  # (B, nh, T, T)
         att = self.attn_drop(att)
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side, (B, T, C)
-        att = att.mean(dim=1, keepdim=False) # (B, T, T)
+        y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side, (B, T, C)
+        att = att.mean(dim=1, keepdim=False)  # (B, T, T)
 
         # output projection
         y = self.resid_drop(self.proj(y))
@@ -176,19 +182,19 @@ class FullAttention(nn.Module):
 
 class CrossAttention(nn.Module):
     def __init__(self,
-                 n_embd, # the embed dim
-                 condition_embd, # condition dim
-                 n_head, # the number of heads
-                 attn_pdrop=0.1, # attention dropout prob
-                 resid_pdrop=0.1, # residual attention dropout prob
-    ):
+                 n_embd,  # the embed dim
+                 condition_embd,  # condition dim
+                 n_head,  # the number of heads
+                 attn_pdrop=0.1,  # attention dropout prob
+                 resid_pdrop=0.1,  # residual attention dropout prob
+                 ):
         super().__init__()
         assert n_embd % n_head == 0
         # key, query, value projections for all heads
         self.key = nn.Linear(condition_embd, n_embd)
         self.query = nn.Linear(n_embd, n_embd)
         self.value = nn.Linear(condition_embd, n_embd)
-        
+
         # regularization
         self.attn_drop = nn.Dropout(attn_pdrop)
         self.resid_drop = nn.Dropout(resid_pdrop)
@@ -200,24 +206,25 @@ class CrossAttention(nn.Module):
         B, T, C = x.size()
         B, T_E, _ = encoder_output.size()
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        k = self.key(encoder_output).view(B, T_E, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = self.value(encoder_output).view(B, T_E, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1))) # (B, nh, T, T)
+        k = self.key(encoder_output).view(B, T_E, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        v = self.value(encoder_output).view(B, T_E, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # (B, nh, T, T)
 
-        att = F.softmax(att, dim=-1) # (B, nh, T, T)
+        att = F.softmax(att, dim=-1)  # (B, nh, T, T)
         att = self.attn_drop(att)
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side, (B, T, C)
-        att = att.mean(dim=1, keepdim=False) # (B, T, T)
+        y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side, (B, T, C)
+        att = att.mean(dim=1, keepdim=False)  # (B, T, T)
 
         # output projection
         y = self.resid_drop(self.proj(y))
         return y, att
-    
+
 
 class EncoderBlock(nn.Module):
     """ an unassuming Transformer block """
+
     def __init__(self,
                  n_embd=1024,
                  n_head=16,
@@ -231,49 +238,49 @@ class EncoderBlock(nn.Module):
         self.ln1 = AdaLayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
         self.attn = FullAttention(
-                n_embd=n_embd,
-                n_head=n_head,
-                attn_pdrop=attn_pdrop,
-                resid_pdrop=resid_pdrop,
-            )
-        
+            n_embd=n_embd,
+            n_head=n_head,
+            attn_pdrop=attn_pdrop,
+            resid_pdrop=resid_pdrop,
+        )
+
         assert activate in ['GELU', 'GELU2']
         act = nn.GELU() if activate == 'GELU' else GELU2()
 
         self.mlp = nn.Sequential(
-                nn.Linear(n_embd, mlp_hidden_times * n_embd),
-                act,
-                nn.Linear(mlp_hidden_times * n_embd, n_embd),
-                nn.Dropout(resid_pdrop),
-            )
-        
+            nn.Linear(n_embd, mlp_hidden_times * n_embd),
+            act,
+            nn.Linear(mlp_hidden_times * n_embd, n_embd),
+            nn.Dropout(resid_pdrop),
+        )
+
     def forward(self, x, timestep, mask=None, label_emb=None):
         a, att = self.attn(self.ln1(x, timestep, label_emb), mask=mask)
         x = x + a
-        x = x + self.mlp(self.ln2(x))   # only one really use encoder_output
+        x = x + self.mlp(self.ln2(x))  # only one really use encoder_output
         return x, att
 
 
 class Encoder(nn.Module):
     def __init__(
-        self,
-        n_layer=14,
-        n_embd=1024,
-        n_head=16,
-        attn_pdrop=0.,
-        resid_pdrop=0.,
-        mlp_hidden_times=4,
-        block_activate='GELU',
+            self,
+            n_layer=14,
+            n_embd=1024,
+            n_head=16,
+            attn_pdrop=0.,
+            resid_pdrop=0.,
+            mlp_hidden_times=4,
+            block_activate='GELU',
     ):
         super().__init__()
 
         self.blocks = nn.Sequential(*[EncoderBlock(
-                n_embd=n_embd,
-                n_head=n_head,
-                attn_pdrop=attn_pdrop,
-                resid_pdrop=resid_pdrop,
-                mlp_hidden_times=mlp_hidden_times,
-                activate=block_activate,
+            n_embd=n_embd,
+            n_head=n_head,
+            attn_pdrop=attn_pdrop,
+            resid_pdrop=resid_pdrop,
+            mlp_hidden_times=mlp_hidden_times,
+            activate=block_activate,
         ) for _ in range(n_layer)])
 
     def forward(self, input, t, index_emb, padding_masks=None, label_emb=None):
@@ -290,6 +297,7 @@ class Encoder(nn.Module):
 
 class DecoderBlock(nn.Module):
     """ an unassuming Transformer block """
+
     def __init__(self,
                  n_channel,
                  n_feat,
@@ -303,24 +311,24 @@ class DecoderBlock(nn.Module):
                  condition_dim=1024,
                  ):
         super().__init__()
-        
+
         self.ln1 = AdaLayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
 
         self.attn1 = FullAttention(
-                n_embd=n_embd,
-                n_head=n_head,
-                attn_pdrop=attn_pdrop, 
-                resid_pdrop=resid_pdrop,
-                )
+            n_embd=n_embd,
+            n_head=n_head,
+            attn_pdrop=attn_pdrop,
+            resid_pdrop=resid_pdrop,
+        )
         self.attn2 = CrossAttention(
-                n_embd=n_embd,
-                condition_embd=condition_dim,
-                n_head=n_head,
-                attn_pdrop=attn_pdrop,
-                resid_pdrop=resid_pdrop,
-                )
-        
+            n_embd=n_embd,
+            condition_embd=condition_dim,
+            n_head=n_head,
+            attn_pdrop=attn_pdrop,
+            resid_pdrop=resid_pdrop,
+        )
+
         self.ln1_1 = AdaLayerNorm(n_embd)
 
         assert activate in ['GELU', 'GELU2']
@@ -359,39 +367,39 @@ class DecoderBlock(nn.Module):
         x = self.mlp(self.ln2(x))
         m = torch.mean(x, dim=1, keepdim=True)
         return x - m, self.linear(m)
-    
+
 
 class Decoder(nn.Module):
     def __init__(
-        self,
-        n_channel,
-        n_feat,
-        for_trend,
-        n_embd=1024,
-        n_head=16,
-        n_layer=10,
-        attn_pdrop=0.1,
-        resid_pdrop=0.1,
-        mlp_hidden_times=4,
-        block_activate='GELU',
-        condition_dim=512    
+            self,
+            n_channel,
+            n_feat,
+            for_trend,
+            n_embd=1024,
+            n_head=16,
+            n_layer=10,
+            attn_pdrop=0.1,
+            resid_pdrop=0.1,
+            mlp_hidden_times=4,
+            block_activate='GELU',
+            condition_dim=512
     ):
-      super().__init__()
-      self.d_model = n_embd
-      self.n_feat = n_feat
-      self.blocks = nn.Sequential(*[DecoderBlock(
-                n_feat=n_feat,
-                n_channel=n_channel,
-                for_trend=for_trend,
-                n_embd=n_embd,
-                n_head=n_head,
-                attn_pdrop=attn_pdrop,
-                resid_pdrop=resid_pdrop,
-                mlp_hidden_times=mlp_hidden_times,
-                activate=block_activate,
-                condition_dim=condition_dim,
+        super().__init__()
+        self.d_model = n_embd
+        self.n_feat = n_feat
+        self.blocks = nn.Sequential(*[DecoderBlock(
+            n_feat=n_feat,
+            n_channel=n_channel,
+            for_trend=for_trend,
+            n_embd=n_embd,
+            n_head=n_head,
+            attn_pdrop=attn_pdrop,
+            resid_pdrop=resid_pdrop,
+            mlp_hidden_times=mlp_hidden_times,
+            activate=block_activate,
+            condition_dim=condition_dim,
         ) for _ in range(n_layer)])
-      
+
     def forward(self, x, t, enc, padding_masks=None, label_emb=None, index_emb=None):
         b, c, _ = x.shape
         # att_weights = []
@@ -405,33 +413,31 @@ class Decoder(nn.Module):
         return x, mean
 
 
-class Transformer(nn.Module):
+class TransformerT(nn.Module):
     def __init__(
-        self,
-        n_feat,
-        n_channel,
-        input_length,
-        for_trend,
-        n_layer_enc=5,
-        n_layer_dec=14,
-        n_embd=1024,
-        n_heads=16,
-        attn_pdrop=0.1,
-        resid_pdrop=0.1,
-        mlp_hidden_times=4,
-        block_activate='GELU',
-        max_len=2048,
-        conv_params=None,
-        **kwargs
+            self,
+            n_feat,
+            n_channel,
+            input_length,
+            for_trend,
+            n_layer_enc=5,
+            n_layer_dec=14,
+            n_embd=1024,
+            n_heads=16,
+            attn_pdrop=0.1,
+            resid_pdrop=0.1,
+            mlp_hidden_times=4,
+            block_activate='GELU',
+            max_len=2048,
+            conv_params=None,
+            **kwargs
     ):
         super().__init__()
-
-        self.for_trend = for_trend
 
         self.emb = Conv_MLP(n_feat, n_embd, resid_pdrop=resid_pdrop)
         self.inverse = Conv_MLP(n_embd, n_feat, resid_pdrop=resid_pdrop)
 
-        self.idx_emb = IndexConditionedEmbedding(int(input_length//n_channel)+1, 64)
+        self.idx_emb = IndexConditionedEmbedding(int(input_length // n_channel) + 1, 64)
 
         if conv_params is None or conv_params[0] is None:
             if n_feat < 32 and n_channel < 64:
@@ -446,7 +452,7 @@ class Transformer(nn.Module):
                                    padding_mode='circular', bias=False)
         '''
         self.combine = nn.Conv1d(n_layer_dec, 1, kernel_size=1, stride=1, padding=0,
-                                   padding_mode='circular', bias=False)
+                                 padding_mode='circular', bias=False)
         nn.init.xavier_uniform_(self.combine.weight)
 
         self.encoder = Encoder(n_layer_enc, n_embd, n_heads, attn_pdrop, resid_pdrop, mlp_hidden_times, block_activate)
@@ -454,20 +460,15 @@ class Transformer(nn.Module):
 
         self.final_encoder_norm = nn.LayerNorm(n_embd)
 
-        self.decoder = Decoder(n_channel, n_feat, for_trend, n_embd, n_heads, n_layer_dec, attn_pdrop, resid_pdrop, mlp_hidden_times,
+        self.decoder = Decoder(n_channel, n_feat, for_trend, n_embd, n_heads, n_layer_dec, attn_pdrop, resid_pdrop,
+                               mlp_hidden_times,
                                block_activate, condition_dim=n_embd)
         self.pos_dec = LearnablePositionalEncoding(n_embd, dropout=resid_pdrop, max_len=max_len)
 
     def forward(self, input, t, index=None, padding_masks=None, return_res=False):
-        print(self.for_trend)
-        print(input.min())
-        print(input.max())
+
         emb = self.emb(input)
-        print(emb.min())
-        print(emb.max())
         inp_enc = self.pos_enc(emb)
-        print(inp_enc.min())
-        print(inp_enc.max())
 
         if index is not None:
             index_emb = self.idx_emb(index)  # shape: [B, D]
@@ -475,38 +476,15 @@ class Transformer(nn.Module):
             index_emb = None
 
         enc_cond = self.encoder(inp_enc, t, index_emb=index_emb, padding_masks=padding_masks)
-        print(enc_cond.min())
-        print(enc_cond.max())
-
         enc_cond = self.final_encoder_norm(enc_cond)
-        print(enc_cond.min())
-        print(enc_cond.max())
 
         inp_dec = self.pos_dec(emb)
-        print(inp_dec.min())
-        print(inp_dec.max())
         output, mean = self.decoder(inp_dec, t, enc_cond, index_emb=index_emb, padding_masks=padding_masks)
-        print(output.min())
-        print(output.max())
-        print(mean.min())
-        print(mean.max())
 
         res = self.inverse(output)
-        print(res.min())
-        print(res.max())
 
         # res = self.combine(mean) + res
         combined_mean = torch.mean(mean, dim=1, keepdim=True)
-        print(combined_mean.min())
-        print(combined_mean.max())
         res = combined_mean + res
-        print(res.min())
-        print(res.max())
-
-        # res = torch.tanh(res)
 
         return res
-
-
-if __name__ == '__main__':
-    pass

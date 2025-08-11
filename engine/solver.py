@@ -153,6 +153,16 @@ class Trainer(object):
                     data_trend = 2. * data_trend - 1.
                     data_season = (data_season - data_season.min()) / (data_season.max() - data_season.min())
                     data_season = 2. * data_season - 1.
+
+                    '''
+                    mu = data_trend.mean()
+                    sigma = data_trend.std()
+                    data_trend = (data_trend - mu) / sigma
+
+                    mu = data_season.mean()
+                    sigma = data_season.std()
+                    data_season = (data_season - mu) / sigma
+                    '''
                     data_idx = data[2].to(device)
 
                     # data = torch.swapaxes(data, 0, 1) # for textum
@@ -230,10 +240,20 @@ class Trainer(object):
                     data_idx = data[2].to(device)
 
                     # Data Preprocessing
+                    '''
                     data_trend = (data_trend - data_trend.min()) / (data_trend.max() - data_trend.min())
                     data_trend = 2. * data_trend - 1.
                     data_season = (data_season - data_season.min()) / (data_season.max() - data_season.min())
                     data_season = 2. * data_season - 1.
+                    '''
+
+                    mu = np.mean(trend)
+                    sigma = np.std(trend)
+                    trend = (trend - mu) / sigma
+
+                    mu = np.mean(season)
+                    sigma = np.std(season)
+                    season = (season - mu) / sigma
 
                     loss_tr, _, _ = self.model_trend(data_trend, index=None, target=data_trend)
                     loss_tr.backward()
@@ -377,32 +397,58 @@ class Trainer(object):
 
         print('num_cycle: ' + str(num))
         for _ in range(num):
-            trend = self.ema_tr.ema_model.generate_mts(batch_size=bs_num, model_kwargs=model_kwargs, cond_fn=cond_fn)
             season = self.ema_se.ema_model.generate_mts(batch_size=bs_num, model_kwargs=model_kwargs, cond_fn=cond_fn)
+            trend = self.ema_tr.ema_model.generate_mts(batch_size=bs_num, model_kwargs=model_kwargs, cond_fn=cond_fn)
             trends = np.row_stack([trends, trend.detach().cpu().numpy()])
             seasons = np.row_stack([seasons, season.detach().cpu().numpy()])
             torch.cuda.empty_cache()
 
         if norm_factor is not None:
+            '''
             norm_idx = np.array([random.randint(0, norm_factor[0].__len__()-1) for _ in range(bs_num * num)])
             t_min = np.array(norm_factor[0])[norm_idx]
             t_max = np.array(norm_factor[1])[norm_idx]
             s_min = np.array(norm_factor[2])[norm_idx]
             s_max = np.array(norm_factor[3])[norm_idx]
 
-            trends = (trends - trends.min()) / (trends.max() - trends.min()) * (t_max - t_min) + t_min
-            seasons = (seasons - seasons.min()) / (seasons.max() - seasons.min()) * (s_max - s_min) + s_min
+            t_min = np.repeat(t_min[:, np.newaxis, :], shape[0], axis=1)
+            t_max = np.repeat(t_max[:, np.newaxis, :], shape[0], axis=1)
+            s_min = np.repeat(s_min[:, np.newaxis, :], shape[0], axis=1)
+            s_max = np.repeat(s_max[:, np.newaxis, :], shape[0], axis=1)
+            '''
+
+            norm_input = np.random.rand(bs_num * num, 2, trends.shape[2])
+            t_mins, t_maxs, s_mins, s_maxs = [], [], [], []
+            for i in range (trends.shape[2]):
+                t_norm = norm_factor[0][i](norm_input[:, :, i])
+                s_norm = norm_factor[1][i](norm_input[:, :, i])
+
+                t_min = np.min(t_norm, axis=1)
+                t_max = np.max(t_norm, axis=1)
+                s_min = np.min(s_norm, axis=1)
+                s_max = np.max(s_norm, axis=1)
+
+                t_mins.append(t_min)
+                t_maxs.append(t_max)
+                s_mins.append(s_min)
+                s_maxs.append(s_max)
+
+            t_mins = np.swapaxes(np.array(t_mins), 0, 1)
+            t_maxs = np.swapaxes(np.array(t_maxs), 0, 1)
+            s_mins = np.swapaxes(np.array(s_mins), 0, 1)
+            s_maxs = np.swapaxes(np.array(s_maxs), 0, 1)
+
+            t_mins = np.repeat(t_mins[:, np.newaxis, :], shape[0], axis=1)
+            t_maxs = np.repeat(t_maxs[:, np.newaxis, :], shape[0], axis=1)
+            s_mins = np.repeat(s_mins[:, np.newaxis, :], shape[0], axis=1)
+            s_maxs = np.repeat(s_maxs[:, np.newaxis, :], shape[0], axis=1)
+
+            trends = ((trends + 1) / 2) * (t_maxs - t_mins) + t_mins
+            seasons = ((seasons + 1) / 2) * (s_maxs - s_mins) + s_mins
 
         samples = trends + seasons
-
-        '''
-        for _ in range(num):
-            sample, trend, season = self.ema.ema_model.generate_mts(batch_size=size_every, model_kwargs=model_kwargs, cond_fn=cond_fn)
-            samples = np.row_stack([samples, sample.detach().cpu().numpy()])
-            trends = np.row_stack([trends, trend.detach().cpu().numpy()])
-            seasons = np.row_stack([seasons, season.detach().cpu().numpy()])
-            torch.cuda.empty_cache()
-        '''
+        # samples = (samples - samples.min()) / (samples.max() - samples.min())
+        # samples = 2. * samples - 1.
 
         if self.logger is not None:
             self.logger.log_info('Sampling done, time: {:.2f}'.format(time.time() - tic))

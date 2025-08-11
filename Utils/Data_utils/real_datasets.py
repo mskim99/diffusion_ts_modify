@@ -9,6 +9,9 @@ from torch.utils.data import Dataset
 from Models.interpretable_diffusion.model_utils import normalize_to_neg_one_to_one, unnormalize_to_zero_to_one
 from Utils.masking_utils import noise_mask
 
+from scipy.stats import gaussian_kde
+from scipy.integrate import cumulative_trapezoid
+from scipy.interpolate import interp1d
 
 class CustomDataset(Dataset):
     def __init__(
@@ -38,8 +41,10 @@ class CustomDataset(Dataset):
         self.trend_data, self.season_data = self.read_data(trend_data, season_data, self.name)
         # self.t_min, self.t_max = self.trend_data.min(), self.trend_data.max()
         # self.s_min, self.s_max = self.season_data.min(), self.season_data.max()
-        self.t_min, self.t_max = [], []
-        self.s_min, self.s_max = [], []
+        # self.t_min, self.t_max = [], []
+        # self.s_min, self.s_max = [], []
+        self.inv_cdfs_trend = []
+        self.inv_cdfs_season = []
         self.dir = os.path.join(output_dir, 'samples')
         os.makedirs(self.dir, exist_ok=True)
 
@@ -53,7 +58,13 @@ class CustomDataset(Dataset):
         train_trend, inference_trend, train_season, inference_season \
             = self.__getsamples(self.trend_data, self.season_data, proportion, seed)
 
-        np.savez(os.path.join(self.dir, f"scaler_ts.npz"), t_min=self.t_min, t_max=self.t_max, s_min=self.s_min, s_max=self.s_max)
+        for i in range(self.trend_data.shape[1]):
+            inv_cdf_trend = self.kde_cdf_inverse(self.trend_data[:, i], bw_method=0.3)
+            inv_cdf_season = self.kde_cdf_inverse(self.season_data[:, i], bw_method=0.3)
+            self.inv_cdfs_trend.append(inv_cdf_trend)
+            self.inv_cdfs_season.append(inv_cdf_season)
+
+        # np.savez(os.path.join(self.dir, f"scaler_ts.npz"), t_min=self.t_min, t_max=self.t_max, s_min=self.s_min, s_max=self.s_max)
 
         self.samples_trend = train_trend if period == 'train' else inference_trend
         self.samples_season = train_season if period == 'train' else inference_season
@@ -72,6 +83,7 @@ class CustomDataset(Dataset):
     def __getsamples(self, trend_data, season_data, proportion, seed):
         trend = np.zeros((self.sample_num_total, self.window, self.var_num))
         season = np.zeros((self.sample_num_total, self.window, self.var_num))
+
         for i in range(self.sample_num_total):
             # start = i * self.window
             # end = min(((i + 1) * self.window), self.len)
@@ -79,10 +91,12 @@ class CustomDataset(Dataset):
             end = i + self.window
             trend[i, 0:(end-start), :] = trend_data[start:end, :]
             season[i, 0:(end-start), :] = season_data[start:end, :]
-            self.t_min.append(trend[i, :, :].min())
-            self.t_max.append(trend[i, :, :].max())
-            self.s_min.append(season[i, :, :].min())
-            self.s_max.append(season[i, :, :].max())
+            '''
+            self.t_min.append(trend[i, :, :].min(axis=0))
+            self.t_max.append(trend[i, :, :].max(axis=0))
+            self.s_min.append(season[i, :, :].min(axis=0))
+            self.s_max.append(season[i, :, :].max(axis=0))
+            '''
 
         train_data_trend, test_data_trend, train_data_season, test_data_season = self.divide(trend, season, proportion, seed)
 
@@ -99,6 +113,8 @@ class CustomDataset(Dataset):
             else:
                 if 1 - proportion > 0:
                     np.save(os.path.join(self.dir, f"{self.name}_norm_truth_{self.window}_test.npy"), test_data_trend+test_data_season)
+                np.save(os.path.join(self.dir, f"{self.name}_norm_truth_{self.window}_train_trend.npy"), train_data_trend)
+                np.save(os.path.join(self.dir, f"{self.name}_norm_truth_{self.window}_train_season.npy"), train_data_season)
                 np.save(os.path.join(self.dir, f"{self.name}_norm_truth_{self.window}_train.npy"), train_data_trend+train_data_season)
 
         '''
@@ -118,6 +134,25 @@ class CustomDataset(Dataset):
             train_data_season = np.concatenate([train_data_season, aug_season_array], axis=0)
         '''
         return train_data_trend, test_data_trend, train_data_season, test_data_season
+
+
+    def kde_cdf_inverse(self, data, bw_method=0.3, grid_size=1000, margin=0.05):
+
+        data = np.asarray(data).ravel()
+        x_min, x_max = data.min(), data.max()
+        span = x_max - x_min if x_max > x_min else 1.0
+        x_grid = np.linspace(x_min - margin * span, x_max + margin * span, grid_size)
+
+        kde = gaussian_kde(data, bw_method=bw_method)
+        density = kde(x_grid)
+
+        # CDF 계산
+        cdf = cumulative_trapezoid(density, x_grid, initial=0.0)
+        cdf /= cdf[-1] if cdf[-1] != 0 else 1.0
+
+        # 역함수 보간
+        inverse_cdf_func = interp1d(cdf, x_grid, bounds_error=False, fill_value=(x_grid[0], x_grid[-1]))
+        return inverse_cdf_func
 
 
     def time_series_augmentation(self, sample, methods=('jitter', 'scaling', 'permutation'), jitter_std=0.05,
