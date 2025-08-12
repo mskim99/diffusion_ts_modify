@@ -114,9 +114,9 @@ print(gt_imgs.shape)
 
 # Case 2 : diffusion_TS
 # gen_imgs = np.load('/data/jionkim/diffusion_TS_modify/OUTPUT/test_stocks_nie3_lr_1e_5/ddpm_fake_test_stocks_nie3_lr_1e_5.npy')
-gen_imgs_season = np.load('/data/jionkim/diffusion_TS_modify/OUTPUT/test_stocks_nie_st_sap_lr_1e_5/ddpm_fake_test_stocks_nie_st_sap_lr_1e_5_season.npy')
-gen_imgs_trend = np.load('/data/jionkim/diffusion_TS_modify/OUTPUT/test_stocks_nie_st_sap_lr_1e_5/ddpm_fake_test_stocks_nie_st_sap_lr_1e_5_trend.npy')
-gt_imgs = np.load('/data/jionkim/diffusion_TS_modify/OUTPUT/test_stocks_nie_st_sap_lr_1e_5/samples/stock_norm_truth_24_train.npy')
+gen_imgs_season = np.load('/data/jionkim/diffusion_TS_modify/OUTPUT/Checkpoints_stock_nie3_st_sap_lr_1e_5/ddpm_fake_Checkpoints_stock_nie3_st_sap_lr_1e_5_season.npy')
+gen_imgs_trend = np.load('/data/jionkim/diffusion_TS_modify/OUTPUT/Checkpoints_stock_nie3_st_sap_lr_1e_5/ddpm_fake_Checkpoints_stock_nie3_st_sap_lr_1e_5_trend.npy')
+gt_imgs = np.load('/data/jionkim/diffusion_TS_modify/OUTPUT/Checkpoints_stock_nie3_st_sap_lr_1e_5/samples/stock_norm_truth_24_train.npy')
 
 print(gen_imgs_season.min())
 print(gen_imgs_season.max())

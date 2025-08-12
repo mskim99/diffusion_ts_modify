@@ -91,9 +91,10 @@ class FourierLayer(nn.Module):
             x_freq = x_freq[:, self.low_freq:]
             f = torch.fft.rfftfreq(t)[self.low_freq:]
 
-        x_freq, index_tuple = self.topk_freq(x_freq)
+        # x_freq, index_tuple = self.topk_freq(x_freq)
         f = repeat(f, 'f -> b f d', b=x_freq.size(0), d=x_freq.size(2)).to(x_freq.device)
-        f = rearrange(f[index_tuple], 'b f d -> b f () d').to(x_freq.device)
+        # f = rearrange(f[index_tuple], 'b f d -> b f () d').to(x_freq.device)
+        f = rearrange(f, 'b f d -> b f () d').to(x_freq.device)
         return self.extrapolate(x_freq, f, t)
 
     def extrapolate(self, x_freq, f, t):
@@ -439,6 +440,7 @@ class TransformerS(nn.Module):
 
         self.emb = Conv_MLP(n_feat, n_embd, resid_pdrop=resid_pdrop)
         self.inverse = Conv_MLP(n_embd, n_feat, resid_pdrop=resid_pdrop)
+        self.final_norm = nn.BatchNorm1d(n_channel)
 
         self.idx_emb = IndexConditionedEmbedding(int(input_length // n_channel) + 1, 64)
 
@@ -499,6 +501,11 @@ class TransformerS(nn.Module):
         # print(output.max())
 
         res = self.inverse(output)
+        # print(res.min())
+        # print(res.max())
+
+        res = self.final_norm(res)
+        # res = torch.tanh(res)
         # print(res.min())
         # print(res.max())
 

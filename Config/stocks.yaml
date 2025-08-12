@@ -45,7 +45,7 @@ model_se:
 solver:
   base_lr: 1.0e-5
   max_epochs: 10000
-  results_folder: ./Checkpoints_stock_nie_st_sap_lr_1e_5
+  results_folder: ./Checkpoints_stock_nie3_st_sap_lr_1e_5
   gradient_accumulate_every: 1
   save_cycle: 1000  # max_epochs // 10
   ema:
