@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 from Models.interpretable_diffusion.model_utils import normalize_to_neg_one_to_one, unnormalize_to_zero_to_one
 from Utils.masking_utils import noise_mask
 
+from statsmodels.tsa.seasonal import STL
 
 class SineDataset(Dataset):
     def __init__(
@@ -37,10 +38,11 @@ class SineDataset(Dataset):
         self.dir = os.path.join(output_dir, 'samples')
         os.makedirs(self.dir, exist_ok=True)
 
-        self.rawdata = self.sine_data_generation(no=num, seq_len=window, dim=dim, save2npy=save2npy, 
-                                                 seed=seed, dir=self.dir, period=period)
+        self.samples, self.samples_trend, self.samples_season = self.sine_data_generation(no=num, seq_len=window,
+                                                                                          dim=dim, save2npy=save2npy,
+                                                                                          seed=seed, dir=self.dir, period=period)
         self.auto_norm = neg_one_to_one
-        self.samples = self.normalize(self.rawdata)
+        # self.samples = self.normalize(self.rawdata)
         self.var_num = dim
         self.sample_num = self.samples.shape[0]
         self.window = window
@@ -59,6 +61,7 @@ class SineDataset(Dataset):
     def normalize(self, rawdata):
         if self.auto_norm:
             data = normalize_to_neg_one_to_one(rawdata)
+            data = 2. * data - 1.
         return data
 
     def unnormalize(self, data):
@@ -84,10 +87,14 @@ class SineDataset(Dataset):
     
         # Initialize the output
         data = list()
+        data_trend = list()
+        data_season = list()
         # Generate sine data
         for i in tqdm(range(0, no), total=no, desc="Sampling sine-dataset"):
             # Initialize each time-series
             temp = list()
+            temp_trend = list()
+            temp_season = list()
             # For each feature
             for k in range(dim):
                 # Randomly drawn frequency and phase
@@ -96,23 +103,48 @@ class SineDataset(Dataset):
           
                 # Generate sine signal based on the drawn frequency and phase
                 temp_data = [np.sin(freq * j + phase) for j in range(seq_len)]
+                temp_data = np.array(temp_data)
+                # print(temp_data.min())
+                # print(temp_data.max())
+                # temp_data = (temp_data - temp_data.min()) / (temp_data.max() - temp_data.min())
+                # temp_data = 2. * temp_data - 1.
+                # print(temp_data.min())
+                # print(temp_data.max())
                 temp.append(temp_data)
+
+                stl = STL(temp_data, period=30, trend=31, robust=True)
+                result = stl.fit()
+
+                trend = result.trend
+                seasonal = result.seasonal
+                residual = result.resid
+
+                temp_trend.append(trend)
+                temp_season.append(seasonal+residual)
         
             # Align row/column
             temp = np.transpose(np.asarray(temp))
+            temp_trend = np.transpose(np.asarray(temp_trend))
+            temp_season = np.transpose(np.asarray(temp_season))
             # Normalize to [0,1]
-            temp = (temp + 1)*0.5
+            # temp = (temp + 1)*0.5
             # Stack the generated data
             data.append(temp)
+            data_trend.append(temp_trend)
+            data_season.append(temp_season)
 
         # Restore RNG.
         np.random.set_state(st0)
         data = np.array(data)
+        data_trend = np.array(data_trend)
+        data_season = np.array(data_season)
         if save2npy:
             np.save(os.path.join(dir, f"sine_ground_truth_{seq_len}_{period}.npy"), data)
+            np.save(os.path.join(dir, f"sine_ground_truth_{seq_len}_{period}_trend.npy"), data_trend)
+            np.save(os.path.join(dir, f"sine_ground_truth_{seq_len}_{period}_season.npy"), data_season)
 
-        return data
-    
+        return data, data_trend, data_season
+
     def mask_data(self, seed=2023):
         masks = np.ones_like(self.samples)
         # Store the state of the RNG to restore later.
@@ -134,11 +166,15 @@ class SineDataset(Dataset):
 
     def __getitem__(self, ind):
         if self.period == 'test':
-            x = self.samples[ind, :, :]  # (seq_length, feat_dim) array
+            # x = self.samples[ind, :, :]  # (seq_length, feat_dim) array
+            x_tr = self.samples_trend[ind, :, :]  # (seq_length, feat_dim) array
+            x_se = self.samples_season[ind, :, :]  # (seq_length, feat_dim) array
             m = self.masking[ind, :, :]  # (seq_length, feat_dim) boolean array
-            return torch.from_numpy(x).float(), torch.from_numpy(m)
-        x = self.samples[ind, :, :]  # (seq_length, feat_dim) array
-        return torch.from_numpy(x).float()
+            return torch.from_numpy(x_tr).float(), torch.from_numpy(x_se).float(), torch.from_numpy(m)
+        # x = self.samples[ind, :, :]  # (seq_length, feat_dim) array
+        x_tr = self.samples_trend[ind, :, :]  # (seq_length, feat_dim) array
+        x_se = self.samples_season[ind, :, :]  # (seq_length, feat_dim) array
+        return torch.from_numpy(x_tr).float(), torch.from_numpy(x_se).float(), ind
 
     def __len__(self):
         return self.sample_num

@@ -17,6 +17,8 @@ Note: Use Post-hoc RNN to predict one-step ahead (last feature)
 """
 
 # Necessary Packages
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 import sys
 sys.path.append('/sciclone/home/yli102/diffusion_rebuild/improved_diffusion/eval_utils')
 
@@ -25,7 +27,7 @@ import tensorflow._api.v2.compat.v1 as tf1
 tf.compat.v1.disable_eager_execution()
 import numpy as np
 from sklearn.metrics import mean_absolute_error
-from metric_utils import extract_time
+from .metric_utils import extract_time
 
  
 def predictive_score_metrics(ori_data, generated_data):
@@ -54,7 +56,7 @@ def predictive_score_metrics(ori_data, generated_data):
   # Network parameters
   hidden_dim = int(dim/2)
   iterations = 5000
-  batch_size = 128
+  batch_size = 64
 
   # Input place holders
   X = tf1.placeholder(tf.float32, [None, max_seq_len-1, dim-1], name = "myinput_x")

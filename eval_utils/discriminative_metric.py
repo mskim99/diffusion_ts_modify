@@ -20,13 +20,15 @@ Output: discriminative score (np.abs(classification accuracy - 0.5))
 
 # Necessary Packages
 import sys
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 ## Replace this line to register eval_utils in improved_diffusion/eval_utils
 sys.path.append('/sciclone/home/yli102/diffusion_rebuild/improved_diffusion/eval_utils')
 import tensorflow as tf
 import tensorflow._api.v2.compat.v1 as tf1
 import numpy as np
 from sklearn.metrics import accuracy_score
-from metric_utils import train_test_divide, extract_time
+from .metric_utils import train_test_divide, extract_time
 
 
 def batch_generator(data, time, batch_size):
@@ -76,7 +78,7 @@ def discriminative_score_metrics (ori_data, generated_data):
   # Network parameters
   hidden_dim = int(dim/2)
   iterations = 2000
-  batch_size = 128
+  batch_size = 64
     
   # Input place holders
   # Feature
@@ -99,6 +101,7 @@ def discriminative_score_metrics (ori_data, generated_data):
       - y_hat: discriminator output
       - d_vars: discriminator variables
     """
+
     with tf1.variable_scope("discriminator", reuse = tf1.AUTO_REUSE) as vs:
       d_cell = tf1.nn.rnn_cell.GRUCell(num_units=hidden_dim, activation=tf.nn.tanh, name = 'd_cell')
       d_outputs, d_last_states = tf1.nn.dynamic_rnn(d_cell, x, dtype=tf.float32, sequence_length = t)
@@ -126,7 +129,10 @@ def discriminative_score_metrics (ori_data, generated_data):
   # Start session and initialize
   sess = tf1.Session()
   sess.run(tf1.global_variables_initializer())
-    
+
+  for d in tf.config.list_logical_devices('GPU'):
+    print(d)  # 논리 번호
+
   # Train/test division for both original and generated data
   train_x, train_x_hat, test_x, test_x_hat, train_t, train_t_hat, test_t, test_t_hat = \
   train_test_divide(ori_data, generated_data, ori_time, generated_time)

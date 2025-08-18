@@ -3,12 +3,6 @@ From https://github.com/Y-debug-sys/Diffusion-TS/blob/main/Utils/metric_utils.py
 """
 import scipy.stats
 import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
-
 
 def display_scores(results):
    mean = np.mean(results)
