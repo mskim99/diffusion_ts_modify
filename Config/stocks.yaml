@@ -2,8 +2,8 @@ model_tr:
   target: Models.interpretable_diffusion.gaussian_diffusion.Diffusion_TS
   params:
     for_trend: True
-    seq_length: 24
-    gt_input_length: 3662
+    seq_length: 256
+    gt_input_length: 19735
     feature_size: 6
     n_layer_enc: 2
     n_layer_dec: 2
@@ -24,8 +24,8 @@ model_se:
   target: Models.interpretable_diffusion.gaussian_diffusion.Diffusion_TS
   params:
     for_trend: False
-    seq_length: 24
-    gt_input_length: 3662
+    seq_length: 256
+    gt_input_length: 19735
     feature_size: 6
     n_layer_enc: 2
     n_layer_dec: 2
@@ -45,7 +45,7 @@ model_se:
 solver:
   base_lr: 1.0e-5
   max_epochs: 10000
-  results_folder: ./Checkpoints_stock_nie3_st_sap_lr_1e_5
+  results_folder: ./Checkpoints_stocks_nie3_tanh
   gradient_accumulate_every: 1
   save_cycle: 1000  # max_epochs // 10
   ema:
@@ -70,9 +70,9 @@ dataloader:
     params:
       name: stock
       proportion: 1.0  # Set to rate < 1 if training conditional generation
-      trend_data: ./Data/datasets_pair/stock_gt_trend_moo.npy
-      season_data: ./Data/datasets_pair/stock_gt_season_moo.npy
-      window: 24  # seq_length
+      trend_data: ./Data/datasets_pair/stock_gt_trend_zo.npy
+      season_data: ./Data/datasets_pair/stock_gt_season_zo.npy
+      window: 256  # seq_length
       save2npy: True
       neg_one_to_one: False
       seed: 123
@@ -83,9 +83,9 @@ dataloader:
     params:
       name: stock
       proportion: 0.9  # rate
-      trend_data: ./Data/datasets_pair/stock_gt_trend_moo.npy
-      season_data: ./Data/datasets_pair/stock_gt_season_moo.npy
-      window: 24  # seq_length
+      trend_data: ./Data/datasets_pair/stock_gt_trend_zo.npy
+      season_data: ./Data/datasets_pair/stock_gt_season_zo.npy
+      window: 256  # seq_length
       save2npy: True
       neg_one_to_one: False
       seed: 123
@@ -96,6 +96,6 @@ dataloader:
     step_size: 5.0e-2
     sampling_steps: 200
 
-  batch_size: 64
+  batch_size: 16
   sample_size: 256
   shuffle: True

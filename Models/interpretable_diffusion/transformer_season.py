@@ -26,48 +26,6 @@ class IndexConditionedEmbedding(nn.Module):
         return emb
 
 
-class TrendBlock(nn.Module):
-    """
-    Model trend of time series using the polynomial regressor.
-    """
-
-    def __init__(self, in_dim, out_dim, in_feat, out_feat, act):
-        super(TrendBlock, self).__init__()
-        trend_poly = 3
-        self.trend = nn.Sequential(
-            nn.Conv1d(in_channels=in_dim, out_channels=trend_poly, kernel_size=3, padding=1),
-            act,
-            Transpose(shape=(1, 2)),
-            nn.Conv1d(in_feat, out_feat, 3, stride=1, padding=1)
-        )
-
-        lin_space = torch.arange(1, out_dim + 1, 1) / (out_dim + 1)
-        self.poly_space = torch.stack([lin_space ** float(p + 1) for p in range(trend_poly)], dim=0)
-
-    def forward(self, input):
-        b, c, h = input.shape
-        x = self.trend(input).transpose(1, 2)
-        trend_vals = torch.matmul(x.transpose(1, 2), self.poly_space.to(x.device))
-        trend_vals = trend_vals.transpose(1, 2)
-        return trend_vals
-
-
-class MovingBlock(nn.Module):
-    """
-    Model trend of time series using the moving average.
-    """
-
-    def __init__(self, out_dim):
-        super(MovingBlock, self).__init__()
-        size = max(min(int(out_dim / 4), 24), 4)
-        self.decomp = series_decomp(size)
-
-    def forward(self, input):
-        b, c, h = input.shape
-        x, trend_vals = self.decomp(input)
-        return x, trend_vals
-
-
 class FourierLayer(nn.Module):
     """
     Model seasonality of time series using the inverse DFT.
@@ -335,10 +293,7 @@ class DecoderBlock(nn.Module):
         assert activate in ['GELU', 'GELU2']
         act = nn.GELU() if activate == 'GELU' else GELU2()
 
-        if for_trend:
-            self.mainblock = TrendBlock(n_channel, n_channel, n_embd, n_embd, act=act)
-        else:
-            self.mainblock = FourierLayer(d_model=n_embd)
+        self.mainblock = FourierLayer(d_model=n_embd)
 
         self.mlp = nn.Sequential(
             nn.Linear(n_embd, mlp_hidden_times * n_embd),
@@ -444,18 +399,6 @@ class TransformerS(nn.Module):
 
         self.idx_emb = IndexConditionedEmbedding(int(input_length // n_channel) + 1, 64)
 
-        if conv_params is None or conv_params[0] is None:
-            if n_feat < 32 and n_channel < 64:
-                kernel_size, padding = 1, 0
-            else:
-                kernel_size, padding = 5, 2
-        else:
-            kernel_size, padding = conv_params
-
-        '''
-        self.combine_s = nn.Conv1d(n_embd, n_feat, kernel_size=kernel_size, stride=1, padding=padding,
-                                   padding_mode='circular', bias=False)
-        '''
         self.combine = nn.Conv1d(n_layer_dec, 1, kernel_size=1, stride=1, padding=0,
                                  padding_mode='circular', bias=False)
         nn.init.xavier_uniform_(self.combine.weight)
@@ -505,7 +448,7 @@ class TransformerS(nn.Module):
         # print(res.max())
 
         res = self.final_norm(res)
-        # res = torch.tanh(res)
+        res = torch.tanh(res)
         # print(res.min())
         # print(res.max())
 

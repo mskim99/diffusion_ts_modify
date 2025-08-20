@@ -1,15 +1,40 @@
 import numpy as np
 import os
-import glob
-import random
 import torch
+import csv
 
 from Utils.eval_utils import rmse,psnr,fre_cosine,mmd,emd, eval_fid
 from Utils.metric_utils import visualization
-
 from scipy import stats
-from sklearn.neighbors import KernelDensity
 
+def _rescale_to_range(x, new_min, new_max, eps=1e-12):
+    x = np.asarray(x)
+    old_min = np.min(x)
+    old_max = np.max(x)
+    if (old_max - old_min) < eps:
+        mid = (new_min + new_max) / 2.0
+        return np.full_like(x, mid, dtype=np.float32)
+    y = (x - old_min) / (old_max - old_min)
+    y = y * (new_max - new_min) + new_min
+    return y.astype(np.float32)
+
+def match_gen_to_gt_range(gt, gen, verbose=True):
+    """
+    Affine-rescale 'gen' to match global min/max of 'gt'.
+    Works for arrays like (N,H,W,C) or (N,L,F).
+    """
+    gt = np.asarray(gt)
+    gen = np.asarray(gen)
+    gt_min, gt_max = float(np.min(gt)), float(np.max(gt))
+    gen_min, gen_max = float(np.min(gen)), float(np.max(gen))
+    if verbose:
+        print(f"[Range] GT min/max: {gt_min:.6f} / {gt_max:.6f}")
+        print(f"[Range] GEN min/max (before): {gen_min:.6f} / {gen_max:.6f}")
+    gen_aligned = _rescale_to_range(gen, gt_min, gt_max)
+    if verbose:
+        a_min, a_max = float(np.min(gen_aligned)), float(np.max(gen_aligned))
+        print(f"[Range] GEN min/max (after):  {a_min:.6f} / {a_max:.6f}")
+    return gt, gen_aligned
 
 def _quantile_transform_1d(original_1d, synthetic_1d):
     """
@@ -289,66 +314,104 @@ os.environ['MASTER_ADDR'] = '127.0.0.1'
 
 # Case 2 : diffusion_TS
 # gen_imgs = np.load('/data/jionkim/diffusion_TS_modify/OUTPUT/test_stocks_nie3_lr_1e_5/ddpm_fake_test_stocks_nie3_lr_1e_5.npy')
-foldername = "test_energy_nie3_st_sap_lr_1e_5"
-dataname = "energy"
-length = 24
+foldername = "test_stock_w_64"
+dataname = "stock"
+length = 64
+prop = False
 
-if dataname == "energy":
-    gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train.npy")
-    gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train_season.npy")
-    gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train_trend.npy")
-    gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-    gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-elif dataname == "stock":
-    gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train.npy")
-    gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train_season.npy")
-    gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train_trend.npy")
-    gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-    gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-elif dataname == "sine":
-    gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train.npy")
-    gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train_season.npy")
-    gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train_trend.npy")
-    gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-    gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-elif dataname == "fmri":
-    gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train.npy")
-    gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train_season.npy")
-    gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train_trend.npy")
-    gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-    gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-elif dataname == "mujoco":
-    gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train.npy")
-    gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train_season.npy")
-    gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train_trend.npy")
-    gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-    gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+if prop:
+    if dataname == "energy":
+        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train.npy")
+        gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train_season.npy")
+        gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train_trend.npy")
+        gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
+        gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+    elif dataname == "stock":
+        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train.npy")
+        gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train_season.npy")
+        gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train_trend.npy")
+        gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
+        gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+    elif dataname == "sine":
+        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train.npy")
+        gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train_season.npy")
+        gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train_trend.npy")
+        gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
+        gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+    elif dataname == "fmri":
+        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train.npy")
+        gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train_season.npy")
+        gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train_trend.npy")
+        gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
+        gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+    elif dataname == "mujoco":
+        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train.npy")
+        gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train_season.npy")
+        gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train_trend.npy")
+        gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
+        gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+    else:
+        raise NotImplementedError(f"Unkown dataname: {dataname}")
+
+    gen_imgs_season = (gen_imgs_season - gen_imgs_season.min()) / (gen_imgs_season.max() - gen_imgs_season.min())
+    gen_imgs_season = 2. * gen_imgs_season - 1.
+
+    gen_imgs_trend = (gen_imgs_trend - gen_imgs_trend.min()) / (gen_imgs_trend.max() - gen_imgs_trend.min())
+    gen_imgs_trend = 2. * gen_imgs_trend - 1.
+
+    print(gen_imgs_season.shape)
+    print(gt_imgs_season.shape)
+
+    if gen_imgs_season.shape[0] > gt_imgs_season.shape[0]:
+        gen_imgs_season = gen_imgs_season[0:gt_imgs_season.shape[0], :, :]
+        gen_imgs_trend = gen_imgs_trend[0:gt_imgs_trend.shape[0], :, :]
+    else:
+        gt_imgs_season = gt_imgs_season[0:gen_imgs_season.shape[0], :, :]
+        gt_imgs_trend = gt_imgs_trend[0:gen_imgs_trend.shape[0], :, :]
+        gt_imgs = gt_imgs[0:gen_imgs_trend.shape[0], :, :]
+
+    # gt_imgs_season = gt_imgs_season[0:10000, :, :]
+    # gt_imgs_trend = gt_imgs_trend[0:10000, :, :]
+
+    gen_imgs_season = quantile_transform_torch_gpu(gt_imgs_season, gen_imgs_season)
+    gen_imgs_trend = quantile_transform_torch_gpu(gt_imgs_trend, gen_imgs_trend)
+    gen_imgs = gen_imgs_season + gen_imgs_trend
+
+    # gt_imgs, gen_imgs = match_gen_to_gt_range(gt_imgs, gen_imgs, verbose=True)
+
+    # gt_imgs = gt_imgs[0:10000, :, :]
+
+    gen_imgs = (gen_imgs / 2.) + 0.5
+    gt_imgs = (gt_imgs / 2.) + 0.5
+
 else:
-    raise NotImplementedError(f"Unkown dataname: {dataname}")
+    if dataname == "energy":
+        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train.npy")
+        gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
+    elif dataname == "stock":
+        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train.npy")
+        gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
+    elif dataname == "sine":
+        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train.npy")
+        gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
+    elif dataname == "fmri":
+        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train.npy")
+        gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
+    elif dataname == "mujoco":
+        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train.npy")
+        gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
 
-# gen_imgs_season = (gen_imgs_season - gen_imgs_season.min()) / (gen_imgs_season.max() - gen_imgs_season.min())
-# gen_imgs_season = 2. * gen_imgs_season - 1.
-gen_imgs_season = gen_imgs_season[0:gt_imgs_season.shape[0], :, :]
+    if gen_imgs.shape[0] > gt_imgs.shape[0]:
+        gen_imgs = gen_imgs[0:gt_imgs.shape[0], :, :]
+    else:
+        gt_imgs = gt_imgs[0:gen_imgs.shape[0], :, :]
 
-# gen_imgs_trend = (gen_imgs_trend - gen_imgs_trend.min()) / (gen_imgs_trend.max() - gen_imgs_trend.min())
-# gen_imgs_trend = 2. * gen_imgs_trend - 1.
-gen_imgs_trend = gen_imgs_trend[0:gt_imgs_season.shape[0], :, :]
-
-gt_imgs_season = gt_imgs_season[0:10000, :, :]
-gt_imgs_trend = gt_imgs_trend[0:10000, :, :]
-
-gen_imgs_season = quantile_transform_torch_gpu(gt_imgs_season, gen_imgs_season)
-gen_imgs_trend = quantile_transform_torch_gpu(gt_imgs_trend, gen_imgs_trend)
-gen_imgs = gen_imgs_season + gen_imgs_trend
+# gen_imgs = (gen_imgs - gen_imgs.min()) / (gen_imgs.max() - gen_imgs.min())
+# gt_imgs = (gt_imgs - gt_imgs.min()) / (gt_imgs.max() - gt_imgs.min())
 
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='pca', compare=gt_imgs.shape[0])
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='tsne', compare=gt_imgs.shape[0])
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='kernel', compare=gt_imgs.shape[0])
-
-gt_imgs = gt_imgs[0:10000, :, :]
-
-gen_imgs = (gen_imgs / 2.) + 0.5
-gt_imgs = (gt_imgs / 2.) + 0.5
 
 rmse_all = rmse(gen_imgs, gt_imgs)
 psnr_all = psnr(gen_imgs, gt_imgs)
@@ -375,8 +438,9 @@ print('[RSME] MEAN : ' + str(rsme_mean) + ' / VAR : ' + str(rsme_var))
 print('[PSNR] MEAN : ' + str(psnr_mean) + ' / VAR : ' + str(psnr_var))
 print('[COS] MEAN : ' + str(fre_cos_mean) + ' / VAR : ' + str(fre_cos_var))
 print('[MMD] MEAN : ' + str(mmd_mean) + ' / VAR : ' + str(mmd_var))
-print('[EMD] MEAN : ' + str(emd_mean) + ' / VAR : ' + str(emd_var))
-print('[FID] : ' + str(fid_value / 360.))
+# print('[EMD] MEAN : ' + str(emd_mean) + ' / VAR : ' + str(emd_var))
+print('[FID] : ' + str(fid_value))
+
 
 # ===== Table 3 Metrics (Paper) =====
 # See: TS-GBench summary metrics used in the paper (MDD, ACD, SD, KD, ED, DTW).
@@ -393,3 +457,33 @@ print('[SD ] : ' + str(sd_val))
 print('[KD ] : ' + str(kd_val))
 print('[ED ] : ' + str(ed_val))
 print('[DTW] : ' + str(dtw_val))
+
+results_all = {}
+
+# Collect printed metrics if variables exist
+for name, var in [
+    ("RMSE", locals().get("rsme_mean")),
+    ("PSNR", locals().get("psnr_mean")),
+    ("COS", locals().get("fre_cos_mean")),
+    ("MMD", locals().get("mmd_mean")),
+    ("FID", locals().get("fid_value")),
+    ("SSIM", locals().get("ssim_val")),
+    ("LPIPS", locals().get("lpips_val")),
+    ("FID", locals().get("fid_val")),
+    ("MDD", locals().get("mdd_val")),
+    ("ACD", locals().get("acd_val")),
+    ("SD", locals().get("sd_val")),
+    ("KD", locals().get("kd_val")),
+    ("ED", locals().get("ed_val")),
+    ("DTW", locals().get("dtw_val"))
+]:
+    if var is not None:
+        results_all[name] = var
+
+csv_path = os.path.join(".", "evaluation_results.csv")
+with open(csv_path, mode="w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=results_all.keys())
+    writer.writeheader()
+    writer.writerow(results_all)
+
+print(f"[CSV] All evaluation results saved to {csv_path}")

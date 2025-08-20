@@ -8,6 +8,15 @@ from einops import rearrange, reduce, repeat
 from Models.interpretable_diffusion.model_utils import LearnablePositionalEncoding, Conv_MLP, \
     AdaLayerNorm, Transpose, GELU2, series_decomp
 
+class SwiGLU(nn.Module):  # [UPD]
+    def __init__(self, dim, hidden):
+        super().__init__()
+        self.w1 = nn.Linear(dim, hidden)
+        self.w2 = nn.Linear(dim, hidden)
+        self.w3 = nn.Linear(hidden, dim)
+    def forward(self, x):
+        return self.w3(F.silu(self.w1(x)) * self.w2(x))
+
 
 class IndexConditionedEmbedding(nn.Module):
     def __init__(self, num_classes, embedding_dim):
@@ -20,9 +29,8 @@ class IndexConditionedEmbedding(nn.Module):
         )
 
     def forward(self, class_index):
-        # class_index: (batch_size,) 또는 (batch_size, 1)
-        emb = self.class_embedding(class_index)  # shape: (batch_size, embedding_dim)
-        emb = self.linear_proj(emb)  # optional: refine with MLP
+        emb = self.class_embedding(class_index)
+        emb = self.linear_proj(emb)
         return emb
 
 
@@ -117,107 +125,74 @@ class FourierLayer(nn.Module):
         return x_freq, index_tuple
 
 
-class SeasonBlock(nn.Module):
-    """
-    Model seasonality of time series using the Fourier series.
-    """
-
-    def __init__(self, in_dim, out_dim, factor=1):
-        super(SeasonBlock, self).__init__()
-        season_poly = factor * min(32, int(out_dim // 2))
-        self.season = nn.Conv1d(in_channels=in_dim, out_channels=season_poly, kernel_size=1, padding=0)
-        fourier_space = torch.arange(0, out_dim, 1) / out_dim
-        p1, p2 = (season_poly // 2, season_poly // 2) if season_poly % 2 == 0 \
-            else (season_poly // 2, season_poly // 2 + 1)
-        s1 = torch.stack([torch.cos(2 * np.pi * p * fourier_space) for p in range(1, p1 + 1)], dim=0)
-        s2 = torch.stack([torch.sin(2 * np.pi * p * fourier_space) for p in range(1, p2 + 1)], dim=0)
-        self.poly_space = torch.cat([s1, s2])
-
-    def forward(self, input):
-        b, c, h = input.shape
-        x = self.season(input)
-        season_vals = torch.matmul(x.transpose(1, 2), self.poly_space.to(x.device))
-        season_vals = season_vals.transpose(1, 2)
-        return season_vals
-
-
 class FullAttention(nn.Module):
     def __init__(self,
-                 n_embd,  # the embed dim
-                 n_head,  # the number of heads
-                 attn_pdrop=0.1,  # attention dropout prob
-                 resid_pdrop=0.1,  # residual attention dropout prob
+                 n_embd,
+                 n_head,
+                 attn_pdrop=0.1,
+                 resid_pdrop=0.1,
                  ):
         super().__init__()
         assert n_embd % n_head == 0
-        # key, query, value projections for all heads
         self.key = nn.Linear(n_embd, n_embd)
         self.query = nn.Linear(n_embd, n_embd)
         self.value = nn.Linear(n_embd, n_embd)
 
-        # regularization
         self.attn_drop = nn.Dropout(attn_pdrop)
         self.resid_drop = nn.Dropout(resid_pdrop)
-        # output projection
         self.proj = nn.Linear(n_embd, n_embd)
         self.n_head = n_head
 
     def forward(self, x, mask=None):
         B, T, C = x.size()
-        k = self.key(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # (B, nh, T, T)
+        k = self.key(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
 
-        att = F.softmax(att, dim=-1)  # (B, nh, T, T)
+        att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
-        y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side, (B, T, C)
-        att = att.mean(dim=1, keepdim=False)  # (B, T, T)
+        y = att @ v
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        att = att.mean(dim=1, keepdim=False)
 
-        # output projection
         y = self.resid_drop(self.proj(y))
         return y, att
 
 
 class CrossAttention(nn.Module):
     def __init__(self,
-                 n_embd,  # the embed dim
-                 condition_embd,  # condition dim
-                 n_head,  # the number of heads
-                 attn_pdrop=0.1,  # attention dropout prob
-                 resid_pdrop=0.1,  # residual attention dropout prob
+                 n_embd,
+                 condition_embd,
+                 n_head,
+                 attn_pdrop=0.1,
+                 resid_pdrop=0.1,
                  ):
         super().__init__()
         assert n_embd % n_head == 0
-        # key, query, value projections for all heads
         self.key = nn.Linear(condition_embd, n_embd)
         self.query = nn.Linear(n_embd, n_embd)
         self.value = nn.Linear(condition_embd, n_embd)
 
-        # regularization
         self.attn_drop = nn.Dropout(attn_pdrop)
         self.resid_drop = nn.Dropout(resid_pdrop)
-        # output projection
         self.proj = nn.Linear(n_embd, n_embd)
         self.n_head = n_head
 
     def forward(self, x, encoder_output, mask=None):
         B, T, C = x.size()
         B, T_E, _ = encoder_output.size()
-        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        k = self.key(encoder_output).view(B, T_E, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        v = self.value(encoder_output).view(B, T_E, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # (B, nh, T, T)
+        k = self.key(encoder_output).view(B, T_E, self.n_head, C // self.n_head).transpose(1, 2)
+        q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        v = self.value(encoder_output).view(B, T_E, self.n_head, C // self.n_head).transpose(1, 2)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
 
-        att = F.softmax(att, dim=-1)  # (B, nh, T, T)
+        att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
-        y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side, (B, T, C)
-        att = att.mean(dim=1, keepdim=False)  # (B, T, T)
+        y = att @ v
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        att = att.mean(dim=1, keepdim=False)
 
-        # output projection
         y = self.resid_drop(self.proj(y))
         return y, att
 
@@ -244,20 +219,19 @@ class EncoderBlock(nn.Module):
             resid_pdrop=resid_pdrop,
         )
 
-        assert activate in ['GELU', 'GELU2']
-        act = nn.GELU() if activate == 'GELU' else GELU2()
-
-        self.mlp = nn.Sequential(
-            nn.Linear(n_embd, mlp_hidden_times * n_embd),
-            act,
-            nn.Linear(mlp_hidden_times * n_embd, n_embd),
+        # [UPD: 정확도] GELU→SwiGLU + LayerScale
+        hidden = int(2/3 * mlp_hidden_times * n_embd)  # [UPD]
+        self.mlp = nn.Sequential(                     # [UPD]
+            SwiGLU(n_embd, hidden),
             nn.Dropout(resid_pdrop),
         )
+        self.res_scale1 = nn.Parameter(torch.ones(1) * 1e-3)  # [UPD]
+        self.res_scale2 = nn.Parameter(torch.ones(1) * 1e-3)  # [UPD]
 
     def forward(self, x, timestep, mask=None, label_emb=None):
         a, att = self.attn(self.ln1(x, timestep, label_emb), mask=mask)
-        x = x + a
-        x = x + self.mlp(self.ln2(x))  # only one really use encoder_output
+        x = x + self.res_scale1 * a                 # [UPD: LayerScale]
+        x = x + self.res_scale2 * self.mlp(self.ln2(x))  # [UPD: SwiGLU + LayerScale]
         return x, att
 
 
@@ -287,7 +261,6 @@ class Encoder(nn.Module):
         x = input
 
         if index_emb is not None:
-            # index_emb: [B, D] → [B, 1, D] → broadcast over time
             x = x + index_emb.unsqueeze(1)
 
         for block_idx in range(len(self.blocks)):
@@ -331,40 +304,38 @@ class DecoderBlock(nn.Module):
 
         self.ln1_1 = AdaLayerNorm(n_embd)
 
-        assert activate in ['GELU', 'GELU2']
-        act = nn.GELU() if activate == 'GELU' else GELU2()
-
-        if for_trend:
-            self.mainblock = TrendBlock(n_channel, n_channel, n_embd, n_embd, act=act)
-        else:
-            self.mainblock = FourierLayer(d_model=n_embd)
-
-        self.mlp = nn.Sequential(
-            nn.Linear(n_embd, mlp_hidden_times * n_embd),
-            act,
-            nn.Linear(mlp_hidden_times * n_embd, n_embd),
+        # [UPD: 정확도] GELU→SwiGLU + LayerScale
+        hidden = int(2/3 * mlp_hidden_times * n_embd)   # [UPD]
+        self.mlp = nn.Sequential(                       # [UPD]
+            SwiGLU(n_embd, hidden),
             nn.Dropout(resid_pdrop),
         )
-
-        # self.proj = nn.Conv1d(n_channel, n_channel * 2, 1)
         self.linear = nn.Linear(n_embd, n_feat)
+        self.res_scale1 = nn.Parameter(torch.ones(1) * 1e-3)  # [UPD]
+        self.res_scale2 = nn.Parameter(torch.ones(1) * 1e-3)  # [UPD]
+        self.res_scale3 = nn.Parameter(torch.ones(1) * 1e-3)  # [UPD] mainblock residual
+
+        self.mainblock = TrendBlock(n_embd, n_embd, n_embd, n_embd, act=nn.GELU())
 
     def forward(self, x, encoder_output, timestep, mask=None, label_emb=None, index_emb=None):
 
         if index_emb is not None:
-            # index_emb: [B, D] → [B, 1, D] → broadcast
             x = x + index_emb.unsqueeze(1)
 
-        a, att = self.attn1(self.ln1(x, timestep, label_emb), mask=mask)
-        x = x + a
-        a, att = self.attn2(self.ln1_1(x, timestep), encoder_output, mask=mask)
-        x = x + a
-        # x1, x2 = self.proj(x).chunk(2, dim=1)
-        # trend, season = self.trend(x1), self.seasonal(x2)
-        x = self.mainblock(x)
-        # xln2 = self.ln2(x)
-        # x = x + self.mlp(xln2)
-        x = self.mlp(self.ln2(x))
+        # self-attn
+        a, _ = self.attn1(self.ln1(x, timestep, label_emb), mask=mask)
+        x = x + self.res_scale1 * a  # [UPD: LayerScale]
+
+        # cross-attn (label_emb 일관 주입)  # [UPD]
+        a, _ = self.attn2(self.ln1_1(x, timestep, label_emb), encoder_output, mask=mask)  # [UPD]
+        x = x + self.res_scale2 * a  # [UPD: LayerScale]
+
+        # main block (trend/fourier) + residual  # [UPD]
+        h = self.mainblock(x)
+        x = x + self.res_scale3 * h  # [UPD: residual on main block]
+
+        x = self.mlp(self.ln2(x))  # [UPD: SwiGLU]
+
         m = torch.mean(x, dim=1, keepdim=True)
         return x - m, self.linear(m)
 
@@ -402,7 +373,6 @@ class Decoder(nn.Module):
 
     def forward(self, x, t, enc, padding_masks=None, label_emb=None, index_emb=None):
         b, c, _ = x.shape
-        # att_weights = []
         mean = []
         for block_idx in range(len(self.blocks)):
             x, residual_mean = \
@@ -437,20 +407,8 @@ class TransformerT(nn.Module):
         self.emb = Conv_MLP(n_feat, n_embd, resid_pdrop=resid_pdrop)
         self.inverse = Conv_MLP(n_embd, n_feat, resid_pdrop=resid_pdrop)
 
-        self.idx_emb = IndexConditionedEmbedding(int(input_length // n_channel) + 1, 64)
+        self.idx_emb = IndexConditionedEmbedding(int(input_length // n_channel) + 1, n_embd)
 
-        if conv_params is None or conv_params[0] is None:
-            if n_feat < 32 and n_channel < 64:
-                kernel_size, padding = 1, 0
-            else:
-                kernel_size, padding = 5, 2
-        else:
-            kernel_size, padding = conv_params
-
-        '''
-        self.combine_s = nn.Conv1d(n_embd, n_feat, kernel_size=kernel_size, stride=1, padding=padding,
-                                   padding_mode='circular', bias=False)
-        '''
         self.combine = nn.Conv1d(n_layer_dec, 1, kernel_size=1, stride=1, padding=0,
                                  padding_mode='circular', bias=False)
         nn.init.xavier_uniform_(self.combine.weight)
@@ -464,6 +422,11 @@ class TransformerT(nn.Module):
                                mlp_hidden_times,
                                block_activate, condition_dim=n_embd)
         self.pos_dec = LearnablePositionalEncoding(n_embd, dropout=resid_pdrop, max_len=max_len)
+
+        # ================================
+        # [UPD: 정확도] 블록 가중합(softmax)
+        # ================================
+        self.layer_weights = nn.Parameter(torch.zeros(n_layer_dec))  # [UPD]
 
     def forward(self, input, t, index=None, padding_masks=None, return_res=False):
 
@@ -483,8 +446,9 @@ class TransformerT(nn.Module):
 
         res = self.inverse(output)
 
-        # res = self.combine(mean) + res
-        combined_mean = torch.mean(mean, dim=1, keepdim=True)
+        # mean: [B, n_layer_dec, 1, D_emb]
+        w = torch.softmax(self.layer_weights, dim=0).view(1, -1, 1, 1)  # [1,L,1,1]
+        combined_mean = (mean * w).sum(dim=1, keepdim=True)            # [B,1,1,D_emb]
         res = combined_mean + res
 
         res = torch.tanh(res)

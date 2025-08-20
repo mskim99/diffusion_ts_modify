@@ -219,69 +219,98 @@ if __name__ == '__main__':
     os.environ['WORLD_SIZE'] = '1'
     os.environ['MASTER_ADDR'] = '127.0.0.1'
 
-    foldername = "test_energy_nie3_st_sap_lr_1e_5"
+    foldername = "test_energy"
     dataname = "energy"
     length = 24
+    prop = False
 
-    if dataname == "energy":
-        ori_data = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train.npy")
-        ori_season = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train_season.npy")
-        ori_trend = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train_trend.npy")
-        season_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-        trend_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-    elif dataname == "stock":
-        ori_data = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train.npy")
-        ori_season = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train_season.npy")
-        ori_trend = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train_trend.npy")
-        season_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-        trend_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-    elif dataname == "sine":
-        ori_data = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train.npy")
-        ori_season = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train_season.npy")
-        ori_trend = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train_trend.npy")
-        season_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-        trend_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-    elif dataname == "fmri":
-        ori_data = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train.npy")
-        ori_season = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train_season.npy")
-        ori_trend = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train_trend.npy")
-        season_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-        trend_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-    elif dataname == "mujoco":
-        ori_data = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train.npy")
-        ori_season = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train_season.npy")
-        ori_trend = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train_trend.npy")
-        season_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-        trend_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+    if prop:
+        if dataname == "energy":
+            ori_data = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train.npy")
+            ori_season = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train_season.npy")
+            ori_trend = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train_trend.npy")
+            season_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
+            trend_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+        elif dataname == "stock":
+            ori_data = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train.npy")
+            ori_season = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train_season.npy")
+            ori_trend = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train_trend.npy")
+            season_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
+            trend_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+        elif dataname == "sine":
+            ori_data = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train.npy")
+            ori_season = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train_season.npy")
+            ori_trend = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train_trend.npy")
+            season_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
+            trend_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+        elif dataname == "fmri":
+            ori_data = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train.npy")
+            ori_season = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train_season.npy")
+            ori_trend = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train_trend.npy")
+            season_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
+            trend_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+        elif dataname == "mujoco":
+            ori_data = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train.npy")
+            ori_season = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train_season.npy")
+            ori_trend = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train_trend.npy")
+            season_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
+            trend_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+        else:
+            raise NotImplementedError(f"Unkown dataname: {dataname}")
+
+        season_data = (season_data - season_data.min()) / (season_data.max() - season_data.min())
+        season_data = 2. * season_data - 1.
+
+        trend_data = (trend_data - trend_data.min()) / (trend_data.max() - trend_data.min())
+        trend_data = 2. * trend_data - 1.
+
+        if season_data.shape[0] > ori_season.shape[0]:
+            season_data = season_data[0:ori_season.shape[0], :, :]
+            trend_data = trend_data[0:ori_trend.shape[0], :, :]
+        else:
+            ori_season = ori_season[0:season_data.shape[0], :, :27]
+            ori_trend = ori_trend[0:trend_data.shape[0], :, :27]
+            ori_data = ori_data[0:trend_data.shape[0], :, :27]
+
+        season_data = quantile_transform_torch_gpu(ori_season, season_data)
+        trend_data = quantile_transform_torch_gpu(ori_trend, trend_data)
+
+        gen_data = season_data + trend_data
+
+        gen_data = (gen_data / 2.) + 0.5
+        # ori_data = (ori_data / 2.) + 0.5
     else:
-        raise NotImplementedError(f"Unkown dataname: {dataname}")
+        if dataname == "energy":
+            ori_data = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train.npy")
+            gen_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
+        elif dataname == "stock":
+            ori_data = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train.npy")
+            gen_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
+        elif dataname == "sine":
+            ori_data = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train.npy")
+            gen_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
+        elif dataname == "fmri":
+            ori_data = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train.npy")
+            gen_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
+        elif dataname == "mujoco":
+            ori_data = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train.npy")
+            gen_data = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
 
-    season_data = (season_data - season_data.min()) / (season_data.max() - season_data.min())
-    season_data = 2. * season_data - 1.
-
-    trend_data = (trend_data - trend_data.min()) / (trend_data.max() - trend_data.min())
-    trend_data = 2. * trend_data - 1.
-
-    season_data = season_data[: ori_data.shape[0]]
-    trend_data = trend_data[: ori_data.shape[0]]
-    season_data = quantile_transform_torch_gpu(ori_season, season_data)
-    trend_data = quantile_transform_torch_gpu(ori_trend, trend_data)
-
-    gen_data = season_data + trend_data
+        if gen_data.shape[0] > ori_data.shape[0]:
+            gen_data = gen_data[0:ori_data.shape[0], :, :]
+        else:
+            ori_data = ori_data[0:gen_data.shape[0], :, :]
 
     print(ori_data.min())
     print(ori_data.max())
     print(gen_data.min())
     print(gen_data.max())
 
-
     print('VDS score')
     VDS_score(ori_data, gen_data)
     print('discriminative score (DA)')
     discriminative_score(ori_data, gen_data)
-    torch.cuda.empty_cache()
     print('predictive score')
     predictive_score(ori_data, gen_data)
-    torch.cuda.empty_cache()
     print('BMMD score (naive / FDDS)')
     BMMD_score_naive(ori_data, gen_data)

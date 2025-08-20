@@ -1,7 +1,9 @@
-model:
+model_tr:
   target: Models.interpretable_diffusion.gaussian_diffusion.Diffusion_TS
   params:
+    for_trend: True
     seq_length: 24
+    gt_input_length: 3662
     feature_size: 5
     n_layer_enc: 1
     n_layer_dec: 2
@@ -16,11 +18,34 @@ model:
     resid_pd: 0.0
     kernel_size: 1
     padding_size: 0
+    use_ff: False
+
+model_se:
+  target: Models.interpretable_diffusion.gaussian_diffusion.Diffusion_TS
+  params:
+    for_trend: False
+    seq_length: 24
+    gt_input_length: 3662
+    feature_size: 5
+    n_layer_enc: 1
+    n_layer_dec: 2
+    d_model: 64  # 4 X 16
+    timesteps: 500
+    sampling_timesteps: 500
+    loss_type: 'l1'
+    beta_schedule: 'cosine'
+    n_heads: 4
+    mlp_hidden_times: 4
+    attn_pd: 0.0
+    resid_pd: 0.0
+    kernel_size: 1
+    padding_size: 0
+    use_ff: True
 
 solver:
   base_lr: 1.0e-5
   max_epochs: 12000
-  results_folder: ./Checkpoints_sine
+  results_folder: ./Checkpoints_sine_nie3_st_sap_lr_1e_5_nonorm
   gradient_accumulate_every: 2
   save_cycle: 1200  # max_epochs // 10
   ema:
@@ -47,7 +72,7 @@ dataloader:
       dim: 5
       window: 24  # seq_length
       save2npy: True
-      neg_one_to_one: True
+      neg_one_to_one: False
       seed: 123
       period: train
 
@@ -58,7 +83,7 @@ dataloader:
       dim: 5
       window: 24  # seq_length
       save2npy: True
-      neg_one_to_one: True
+      neg_one_to_one: False
       seed: 123
       style: separate
       period: test
