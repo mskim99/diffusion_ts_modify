@@ -314,9 +314,9 @@ os.environ['MASTER_ADDR'] = '127.0.0.1'
 
 # Case 2 : diffusion_TS
 # gen_imgs = np.load('/data/jionkim/diffusion_TS_modify/OUTPUT/test_stocks_nie3_lr_1e_5/ddpm_fake_test_stocks_nie3_lr_1e_5.npy')
-foldername = "test_stock_w_64"
+foldername = "test_stock_w_256"
 dataname = "stock"
-length = 64
+length = 256
 prop = False
 
 if prop:
@@ -400,6 +400,8 @@ else:
     elif dataname == "mujoco":
         gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train.npy")
         gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
+    else:
+        raise NotImplementedError(f"Unkown dataname: {dataname}")
 
     if gen_imgs.shape[0] > gt_imgs.shape[0]:
         gen_imgs = gen_imgs[0:gt_imgs.shape[0], :, :]

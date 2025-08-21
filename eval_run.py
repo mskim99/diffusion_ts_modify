@@ -219,10 +219,10 @@ if __name__ == '__main__':
     os.environ['WORLD_SIZE'] = '1'
     os.environ['MASTER_ADDR'] = '127.0.0.1'
 
-    foldername = "test_energy"
-    dataname = "energy"
-    length = 24
-    prop = False
+    foldername = "test_stock_nie3_tanh_64"
+    dataname = "stock"
+    length = 64
+    prop = True
 
     if prop:
         if dataname == "energy":
@@ -277,7 +277,7 @@ if __name__ == '__main__':
 
         gen_data = season_data + trend_data
 
-        gen_data = (gen_data / 2.) + 0.5
+        # gen_data = (gen_data / 2.) + 0.5
         # ori_data = (ori_data / 2.) + 0.5
     else:
         if dataname == "energy":
