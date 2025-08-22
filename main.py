@@ -5,7 +5,8 @@ import numpy as np
 import math
 
 from engine.logger import Logger
-from engine.solver import Trainer
+# from engine.solver import Trainer
+from engine.solver_fusion_alpha import Trainer
 from Data.build_dataloader import build_dataloader, build_dataloader_cond
 from Models.interpretable_diffusion.model_utils import unnormalize_to_zero_to_one
 from Utils.io_utils import load_yaml_config, seed_everything, merge_opts_to_config, instantiate_from_config
@@ -103,9 +104,11 @@ def main():
         '''
         samples, trends, seasons = trainer.sample(num=20, size_every=dataset.window, shape=[dataset.window, dataset.var_num],
                                                   norm_factor=[dataset.t_min, dataset.t_max, dataset.s_min, dataset.s_max])
-        '''
+
         samples, trends, seasons = trainer.sample(num=100, size_every=dataset.window,shape=[dataset.window, dataset.var_num],
                                                   norm_factor=None)
+        '''
+        samples, trends, seasons = trainer.sample(num=100, size_every=dataset.window, shape=[dataset.window, dataset.var_num])
         # samples, trends, seasons = trainer.sample(num=20, size_every=dataset.window, shape=[dataset.window, dataset.var_num], norm_factor=None)
 
 

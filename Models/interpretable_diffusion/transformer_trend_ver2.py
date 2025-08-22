@@ -8,6 +8,14 @@ from einops import rearrange, reduce, repeat
 from Models.interpretable_diffusion.model_utils import LearnablePositionalEncoding, Conv_MLP, \
     AdaLayerNorm, Transpose, GELU2, series_decomp
 
+class OutputAffine(nn.Module):
+    def __init__(self, C):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(1,1,C))
+        self.beta  = nn.Parameter(torch.zeros(1,1,C))
+    def forward(self, x):  # x:(B,L,C)
+        return self.gamma * x + self.beta
+
 class SwiGLU(nn.Module):  # [UPD]
     def __init__(self, dim, hidden):
         super().__init__()
@@ -16,7 +24,6 @@ class SwiGLU(nn.Module):  # [UPD]
         self.w3 = nn.Linear(hidden, dim)
     def forward(self, x):
         return self.w3(F.silu(self.w1(x)) * self.w2(x))
-
 
 class IndexConditionedEmbedding(nn.Module):
     def __init__(self, num_classes, embedding_dim):
@@ -36,28 +43,28 @@ class IndexConditionedEmbedding(nn.Module):
 
 class TrendBlock(nn.Module):
     """
-    Model trend of time series using the polynomial regressor.
+    Model trend of time series using a convolutional block.
+    The polynomial regressor logic has been removed as it was incompatible with the model's architecture.
     """
 
     def __init__(self, in_dim, out_dim, in_feat, out_feat, act):
         super(TrendBlock, self).__init__()
         trend_poly = 3
+        # This sequential module correctly processes a tensor of shape (B, C, T)
+        # and returns a tensor of the same shape, making it suitable for residual connections.
         self.trend = nn.Sequential(
             nn.Conv1d(in_channels=in_dim, out_channels=trend_poly, kernel_size=3, padding=1),
             act,
-            Transpose(shape=(1, 2)),
-            nn.Conv1d(in_feat, out_feat, 3, stride=1, padding=1)
+            nn.Conv1d(in_channels=trend_poly, out_channels=out_feat, kernel_size=3, stride=1, padding=1)
         )
-
-        lin_space = torch.arange(1, out_dim + 1, 1) / (out_dim + 1)
-        self.poly_space = torch.stack([lin_space ** float(p + 1) for p in range(trend_poly)], dim=0)
+        # The polynomial space logic is no longer used by the forward pass.
+        # lin_space = torch.arange(1, out_dim + 1, 1) / (out_dim + 1)
+        # self.poly_space = torch.stack([lin_space ** float(p + 1) for p in range(trend_poly)], dim=0)
 
     def forward(self, input):
-        b, c, h = input.shape
-        x = self.trend(input).transpose(1, 2)
-        trend_vals = torch.matmul(x.transpose(1, 2), self.poly_space.to(x.device))
-        trend_vals = trend_vals.transpose(1, 2)
-        return trend_vals
+        # The input has shape (B, C, T). The self.trend module processes it
+        # and returns a tensor of the same shape. This is the correct behavior.
+        return self.trend(input)
 
 
 class MovingBlock(nn.Module):
@@ -331,7 +338,11 @@ class DecoderBlock(nn.Module):
         x = x + self.res_scale2 * a  # [UPD: LayerScale]
 
         # main block (trend/fourier) + residual  # [UPD]
-        h = self.mainblock(x)
+        # h = self.mainblock(x)
+        x_transposed = x.transpose(1, 2)  # (B, T, C) -> (B, C, T)
+        h_transposed = self.mainblock(x_transposed)
+        h = h_transposed.transpose(1, 2)  # Restore as (B, T, C)
+
         x = x + self.res_scale3 * h  # [UPD: residual on main block]
 
         x = self.mlp(self.ln2(x))  # [UPD: SwiGLU]
@@ -406,6 +417,7 @@ class TransformerT(nn.Module):
 
         self.emb = Conv_MLP(n_feat, n_embd, resid_pdrop=resid_pdrop)
         self.inverse = Conv_MLP(n_embd, n_feat, resid_pdrop=resid_pdrop)
+        self.out_affine = OutputAffine(n_feat)
 
         self.idx_emb = IndexConditionedEmbedding(int(input_length // n_channel) + 1, n_embd)
 
@@ -423,9 +435,6 @@ class TransformerT(nn.Module):
                                block_activate, condition_dim=n_embd)
         self.pos_dec = LearnablePositionalEncoding(n_embd, dropout=resid_pdrop, max_len=max_len)
 
-        # ================================
-        # [UPD: 정확도] 블록 가중합(softmax)
-        # ================================
         self.layer_weights = nn.Parameter(torch.zeros(n_layer_dec))  # [UPD]
 
     def forward(self, input, t, index=None, padding_masks=None, return_res=False):
@@ -447,10 +456,11 @@ class TransformerT(nn.Module):
         res = self.inverse(output)
 
         # mean: [B, n_layer_dec, 1, D_emb]
-        w = torch.softmax(self.layer_weights, dim=0).view(1, -1, 1, 1)  # [1,L,1,1]
-        combined_mean = (mean * w).sum(dim=1, keepdim=True)            # [B,1,1,D_emb]
-        res = combined_mean + res
+        # w = torch.softmax(self.layer_weights, dim=0).view(1, -1, 1, 1)  # [1,L,1,1]
+        # combined_mean = (mean * w).sum(dim=1, keepdim=True)            # [B,1,1,D_emb]
+        # res = combined_mean + res
 
-        res = torch.tanh(res)
+        # res = torch.tanh(res)
+        res = self.out_affine(res)
 
         return res

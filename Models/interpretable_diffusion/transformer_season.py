@@ -6,8 +6,7 @@ import torch.nn.functional as F
 from torch import nn
 from einops import rearrange, reduce, repeat
 from Models.interpretable_diffusion.model_utils import LearnablePositionalEncoding, Conv_MLP, \
-    AdaLayerNorm, Transpose, GELU2, series_decomp
-
+    AdaLayerNorm, Transpose, GELU2, series_decomp, OutputScaler
 
 class IndexConditionedEmbedding(nn.Module):
     def __init__(self, num_classes, embedding_dim):
@@ -395,6 +394,7 @@ class TransformerS(nn.Module):
 
         self.emb = Conv_MLP(n_feat, n_embd, resid_pdrop=resid_pdrop)
         self.inverse = Conv_MLP(n_embd, n_feat, resid_pdrop=resid_pdrop)
+        self.scaler = OutputScaler(n_feat, trainable=True)
         self.final_norm = nn.BatchNorm1d(n_channel)
 
         self.idx_emb = IndexConditionedEmbedding(int(input_length // n_channel) + 1, 64)
@@ -448,7 +448,8 @@ class TransformerS(nn.Module):
         # print(res.max())
 
         res = self.final_norm(res)
-        res = torch.tanh(res)
+        res = self.scaler(res)
+        # res = torch.tanh(res)
         # print(res.min())
         # print(res.max())
 

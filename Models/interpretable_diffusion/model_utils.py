@@ -96,8 +96,24 @@ def unnormalize_to_zero_to_one(x):
     return (x + 1) * 0.5
 
 
-# sinusoidal positional embeds
+class OutputScaler(nn.Module):
+    """
+    per-channel μ, σ로 출력 분포를 복원(학습 중 업데이트/고정 가능)
+    기대 입력: (B, T, C)  출력: (B, T, C)
+    """
+    def __init__(self, n_feat, init_mean=None, init_std=None, trainable=False, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        mean = torch.zeros(n_feat) if init_mean is None else torch.as_tensor(init_mean, dtype=torch.float32)
+        std  = torch.ones(n_feat)  if init_std  is None else torch.as_tensor(init_std,  dtype=torch.float32)
+        self.mean = nn.Parameter(mean, requires_grad=trainable)
+        self.std  = nn.Parameter(std.clamp_min(eps), requires_grad=trainable)
 
+    def forward(self, x):            # x: (B, T, C)
+        return x * self.std + self.mean
+
+
+# sinusoidal positional embeds
 class SinusoidalPosEmb(nn.Module):
     """
     Sinusoidal positional embedding module.

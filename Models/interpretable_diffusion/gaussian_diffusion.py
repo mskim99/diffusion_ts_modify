@@ -7,7 +7,7 @@ from torch import nn
 from einops import reduce
 from tqdm.auto import tqdm
 from functools import partial
-from Models.interpretable_diffusion.transformer_trend import TransformerT
+from Models.interpretable_diffusion.transformer_trend_ver2 import TransformerT
 from Models.interpretable_diffusion.transformer_season import TransformerS
 from Models.interpretable_diffusion.model_utils import default, identity, extract
 
@@ -270,9 +270,6 @@ class Diffusion_TS(nn.Module):
         x = self.q_sample(x_start=x_start, t=t, noise=noise)  # noise sample
         model_out = self.model(x, t, index=index, padding_masks=padding_masks)
 
-        if out_result:
-            return model_out
-
         train_loss = self.loss_fn(model_out, target, reduction='none')
 
         fourier_loss = torch.tensor([0.])
@@ -294,7 +291,11 @@ class Diffusion_TS(nn.Module):
 
         train_loss = reduce(train_loss, 'b ... -> b (...)', 'mean')
         train_loss = train_loss * extract(self.loss_weight, t, train_loss.shape)
-        return train_loss.mean(), fourier_loss.mean(), dwt_loss
+
+        if out_result:
+            return train_loss.mean(), fourier_loss.mean(), dwt_loss, model_out
+        else:
+            return train_loss.mean(), fourier_loss.mean(), dwt_loss
 
     def forward(self, x, index, **kwargs):
         b, c, n, device, feature_size, = *x.shape, x.device, self.feature_size

@@ -312,104 +312,245 @@ os.environ['RANK'] = '0'
 os.environ['WORLD_SIZE'] = '1'
 os.environ['MASTER_ADDR'] = '127.0.0.1'
 
-# Case 2 : diffusion_TS
-# gen_imgs = np.load('/data/jionkim/diffusion_TS_modify/OUTPUT/test_stocks_nie3_lr_1e_5/ddpm_fake_test_stocks_nie3_lr_1e_5.npy')
-foldername = "test_stock_w_256"
-dataname = "stock"
-length = 256
-prop = False
+# ===========================
+# Eval options (post-processing switches)
+# ===========================
+# - 기본값은 "보정 끔" → 모델 출력 분포가 그대로 평가 지표에 반영됨
+APPLY_MINMAX_GEN   = False  # 생성물(gen)에 per-array minmax 정규화 후 [-1,1] 적용
+APPLY_QUANTILE_FIX = False  # 분위수(quantile) 보정으로 gen의 마진 분포를 GT에 정렬
+APPLY_RANGE_MATCH  = False  # gen 전체를 GT 전체 범위(min/max)에 affine 매칭
+
+# ---------------------------
+# 실험 식별자
+# ---------------------------
+foldername = "test_stocks_nie3_v2_os_fal_moo"
+ckptfoldername = "Checkpoints_stocks_nie3_v2_v2_os_fal_24"
+dataname = "stock"   # {"energy","stock","sine","fmri","mujoco"}
+length = 24
+prop = True          # True: trend/season 따로 합성하여 평가, False: 바로 단일 gen 사용
+
+# ===========================
+# Fusion (alpha) options
+# ===========================
+USE_FUSION_ALPHA    = True   # True면 trend/season을 alpha로 가중합
+ALPHA_SOURCE        = "ckpt" # {"scalar","ckpt"}: 스칼라 고정값 or 체크포인트에서 로드
+ALPHA_SCALAR        = 0.2857    # ALPHA_SOURCE=="scalar"일 때 사용 (0~1 권장)
+ALPHA_CKPT_PATH     = f"./{ckptfoldername}/checkpoint-10.pt"  # 예시 경로(적절히 수정)
+ALPHA_OPT_MODE = "sample_feature"  # {"none","scalar","feature","sample_feature"} 중 선택
+# - "scalar": 전체 데이터에 대한 단일 α∗
+# - "feature": 피처별 α∗ (shape: (1,1,C)), 시간과 샘플에 동일 적용
+# - "sample_feature": 샘플×피처별 α∗ (shape: (N,1,C)), 각 시계열에 맞춤
+
+def _alpha_optimal_mse(gt, t, s, mode="scalar", eps=1e-12):
+    """
+    MSE 기준으로 || alpha*T + (1-alpha)*S - GT ||^2 를 최소화하는 alpha*를 해석적으로 구함.
+    입력 shape: (N, L, C)
+    반환: alpha  (모드별 shape)
+    """
+    gt = np.asarray(gt); t = np.asarray(t); s = np.asarray(s)
+    d = t - s                      # (N,L,C)
+    y = gt - s                     # (N,L,C)
+    num = np.sum(d * y, axis=1)    # (N,C)   (시간 차원 합)
+    den = np.sum(d * d, axis=1) + eps  # (N,C)
+
+    if mode == "scalar":
+        a = np.sum(num) / np.sum(den)                 # 스칼라
+        return float(np.clip(a, -1.0, 1.0))
+
+    elif mode == "feature":
+        a_fc = np.sum(num, axis=0) / (np.sum(den, axis=0))   # (C,)
+        a_fc = np.clip(a_fc, -1.0, 1.0)                       # [0,1]
+        return a_fc.reshape(1,1,-1)                           # (1,1,C)
+
+    elif mode == "sample_feature":
+        a_sf = num / den                       # (N,C)
+        a_sf = np.clip(a_sf, -1.0, 1.0)
+        return a_sf.reshape(-1,1,a_sf.shape[1])  # (N,1,C)
+
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+def _load_alpha_from_ckpt(ckpt_path):
+    """
+    체크포인트에서 fusion_alpha를 읽어와 sigmoid를 적용해 [0,1]로 만든 뒤
+    numpy로 반환합니다. 기대 shape: (1,1,C) 또는 (C,)
+    """
+    if not os.path.exists(ckpt_path):
+        print(f"[alpha] ckpt not found: {ckpt_path}")
+        return None
+    try:
+        data = torch.load(ckpt_path, map_location="cpu")
+        fa = data.get("fusion_alpha", None)
+        if fa is None:
+            print("[alpha] fusion_alpha not in checkpoint")
+            return None
+        fa = torch.sigmoid(fa)  # [0,1]
+        return fa.detach().cpu().numpy()
+    except Exception as e:
+        print(f"[alpha] failed to load alpha from ckpt: {e}")
+        return None
+
+def _broadcast_alpha(alpha, target_shape):
+    """
+    alpha: float 또는 (1,1,C)/(C,) numpy
+    target_shape: (N, L, C)
+    반환: (N, L, C) 브로드캐스트된 numpy
+    """
+    N, L, C = target_shape
+    if np.isscalar(alpha):
+        return float(alpha)  # 스칼라는 브로드캐스트로 사용
+    alpha = np.asarray(alpha)
+    if alpha.ndim == 1:           # (C,)
+        alpha = alpha.reshape(1, 1, -1)
+    elif alpha.ndim == 3:         # (1,1,C) 예상
+        pass
+    else:
+        raise ValueError(f"Unsupported alpha shape: {alpha.shape}")
+    # (1,1,C) -> (N,L,C)로 브로드캐스트
+    return np.broadcast_to(alpha, (N, L, C))
+
+# ---------------------------
+# 데이터 로드 + (선택적) 보정
+# ---------------------------
+def _load_prop_split(folder, name, L):
+    if name == "energy":
+        gt = np.load(f"./OUTPUT/{folder}/samples/energy_norm_truth_{L}_train.npy")
+        gt_s = np.load(f"./OUTPUT/{folder}/samples/energy_norm_truth_{L}_train_season.npy")
+        gt_t = np.load(f"./OUTPUT/{folder}/samples/energy_norm_truth_{L}_train_trend.npy")
+    elif name == "stock":
+        gt = np.load(f"./OUTPUT/{folder}/samples/stock_norm_truth_{L}_train.npy")
+        gt_s = np.load(f"./OUTPUT/{folder}/samples/stock_norm_truth_{L}_train_season.npy")
+        gt_t = np.load(f"./OUTPUT/{folder}/samples/stock_norm_truth_{L}_train_trend.npy")
+    elif name == "sine":
+        gt = np.load(f"./OUTPUT/{folder}/samples/sine_ground_truth_{L}_train.npy")
+        gt_s = np.load(f"./OUTPUT/{folder}/samples/sine_ground_truth_{L}_train_season.npy")
+        gt_t = np.load(f"./OUTPUT/{folder}/samples/sine_ground_truth_{L}_train_trend.npy")
+    elif name == "fmri":
+        gt = np.load(f"./OUTPUT/{folder}/samples/fmri_norm_truth_{L}_train.npy")
+        gt_s = np.load(f"./OUTPUT/{folder}/samples/fmri_norm_truth_{L}_train_season.npy")
+        gt_t = np.load(f"./OUTPUT/{folder}/samples/fmri_norm_truth_{L}_train_trend.npy")
+    elif name == "mujoco":
+        gt = np.load(f"./OUTPUT/{folder}/samples/mujoco_norm_truth_{L}_train.npy")
+        gt_s = np.load(f"./OUTPUT/{folder}/samples/mujoco_norm_truth_{L}_train_season.npy")
+        gt_t = np.load(f"./OUTPUT/{folder}/samples/mujoco_norm_truth_{L}_train_trend.npy")
+    else:
+        raise NotImplementedError(f"Unknown dataname: {name}")
+
+    gen_s = np.load(f"./OUTPUT/{folder}/ddpm_fake_{folder}_season.npy")
+    gen_t = np.load(f"./OUTPUT/{folder}/ddpm_fake_{folder}_trend.npy")
+    return gt, gt_s, gt_t, gen_s, gen_t
+
+def _load_direct(folder, name, L):
+    if name == "energy":
+        gt = np.load(f"./OUTPUT/{folder}/samples/energy_norm_truth_{L}_train.npy")
+    elif name == "stock":
+        gt = np.load(f"./OUTPUT/{folder}/samples/stock_norm_truth_{L}_train.npy")
+    elif name == "sine":
+        gt = np.load(f"./OUTPUT/{folder}/samples/sine_ground_truth_{L}_train.npy")
+    elif name == "fmri":
+        gt = np.load(f"./OUTPUT/{folder}/samples/fmri_norm_truth_{L}_train.npy")
+    elif name == "mujoco":
+        gt = np.load(f"./OUTPUT/{folder}/samples/mujoco_norm_truth_{L}_train.npy")
+    else:
+        raise NotImplementedError(f"Unknown dataname: {name}")
+
+    gen = np.load(f"./OUTPUT/{folder}/ddpm_fake_{folder}.npy")
+    return gt, gen
+
+def _align_first_dim(a, b):
+    """두 배열의 첫 차원(N)을 동일한 최소값으로 맞춰 slice."""
+    N = min(a.shape[0], b.shape[0])
+    return a[:N], b[:N]
 
 if prop:
-    if dataname == "energy":
-        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train.npy")
-        gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train_season.npy")
-        gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train_trend.npy")
-        gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-        gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-    elif dataname == "stock":
-        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train.npy")
-        gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train_season.npy")
-        gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train_trend.npy")
-        gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-        gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-    elif dataname == "sine":
-        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train.npy")
-        gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train_season.npy")
-        gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train_trend.npy")
-        gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-        gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-    elif dataname == "fmri":
-        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train.npy")
-        gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train_season.npy")
-        gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train_trend.npy")
-        gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-        gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
-    elif dataname == "mujoco":
-        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train.npy")
-        gt_imgs_season = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train_season.npy")
-        gt_imgs_trend = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train_trend.npy")
-        gen_imgs_season = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_season.npy")
-        gen_imgs_trend = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}_trend.npy")
+    # 1) 로드
+    gt_imgs, gt_imgs_season, gt_imgs_trend, gen_imgs_season, gen_imgs_trend = _load_prop_split(foldername, dataname, length)
+
+    # 2) 배치 수 일치
+    gt_imgs_season, gen_imgs_season = _align_first_dim(gt_imgs_season, gen_imgs_season)
+    gt_imgs_trend,  gen_imgs_trend  = _align_first_dim(gt_imgs_trend,  gen_imgs_trend)
+    # gt도 season/trend와 동일한 N으로 맞춤
+    gt_imgs, _ = _align_first_dim(gt_imgs, gen_imgs_trend)
+
+    # 3) (선택) 생성물 minmax 정규화 → [-1,1]
+    if APPLY_MINMAX_GEN:
+        def mm_to_pm1(x):
+            xmin, xmax = x.min(), x.max()
+            if xmax - xmin < 1e-6:  # 상수 신호 보호
+                return np.zeros_like(x)
+            y = (x - xmin) / (xmax - xmin)
+            return 2.0 * y - 1.0
+        gen_imgs_season = mm_to_pm1(gen_imgs_season)
+        gen_imgs_trend  = mm_to_pm1(gen_imgs_trend)
+
+    # 4) (선택) 분위수 보정으로 마진 분포 정렬
+    if APPLY_QUANTILE_FIX:
+        gen_imgs_season = quantile_transform_torch_gpu(gt_imgs_season, gen_imgs_season)
+        gen_imgs_trend  = quantile_transform_torch_gpu(gt_imgs_trend,  gen_imgs_trend)
+
+    # 5) 합성 with alpha
+    if USE_FUSION_ALPHA:
+        if ALPHA_SOURCE == "ckpt":
+            alpha_loaded = _load_alpha_from_ckpt(ALPHA_CKPT_PATH)
+            if alpha_loaded is None:
+                print("[alpha] fallback to scalar due to load failure.")
+                alpha_loaded = ALPHA_SCALAR
+        elif ALPHA_SOURCE == "scalar":
+            alpha_loaded = ALPHA_SCALAR
+        else:
+            raise ValueError(f"Unknown ALPHA_SOURCE: {ALPHA_SOURCE}")
+
+        # 브로드캐스트 후 결합
+        gate = _broadcast_alpha(alpha_loaded, gen_imgs_trend.shape)  # (N,L,C) 또는 스칼라
+        gen_imgs_ckpt = gate * gen_imgs_trend + (1.0 - gate) * gen_imgs_season
     else:
-        raise NotImplementedError(f"Unkown dataname: {dataname}")
+        gen_imgs_ckpt = gen_imgs_season + gen_imgs_trend
 
-    gen_imgs_season = (gen_imgs_season - gen_imgs_season.min()) / (gen_imgs_season.max() - gen_imgs_season.min())
-    gen_imgs_season = 2. * gen_imgs_season - 1.
+    # 5-2) (진단) 해석적 최적 α 결합도 계산해 보자
+    if ALPHA_OPT_MODE != "none":
+        alpha_star = _alpha_optimal_mse(gt_imgs, gen_imgs_trend, gen_imgs_season, mode=ALPHA_OPT_MODE)
+        if np.isscalar(alpha_star):
+            gen_imgs_opt = alpha_star * gen_imgs_trend + (1.0 - alpha_star) * gen_imgs_season
+        else:
+            gen_imgs_opt = np.broadcast_to(alpha_star, gen_imgs_trend.shape) * gen_imgs_trend \
+                           + (1.0 - np.broadcast_to(alpha_star, gen_imgs_season.shape)) * gen_imgs_season
 
-    gen_imgs_trend = (gen_imgs_trend - gen_imgs_trend.min()) / (gen_imgs_trend.max() - gen_imgs_trend.min())
-    gen_imgs_trend = 2. * gen_imgs_trend - 1.
-
-    print(gen_imgs_season.shape)
-    print(gt_imgs_season.shape)
-
-    if gen_imgs_season.shape[0] > gt_imgs_season.shape[0]:
-        gen_imgs_season = gen_imgs_season[0:gt_imgs_season.shape[0], :, :]
-        gen_imgs_trend = gen_imgs_trend[0:gt_imgs_trend.shape[0], :, :]
+        # 어떤 결합이 더 좋은지 선택 (MDD 또는 원하는 기준으로)
+        mdd_ckpt = metric_mdd(gt_imgs, gen_imgs_ckpt)
+        mdd_opt = metric_mdd(gt_imgs, gen_imgs_opt)
+        print(f"[alpha-diagnosis] MDD(ckpt)={mdd_ckpt:.4f}, MDD(opt-{ALPHA_OPT_MODE})={mdd_opt:.4f}")
+        gen_imgs = gen_imgs_opt if mdd_opt < mdd_ckpt else gen_imgs_ckpt
     else:
-        gt_imgs_season = gt_imgs_season[0:gen_imgs_season.shape[0], :, :]
-        gt_imgs_trend = gt_imgs_trend[0:gen_imgs_trend.shape[0], :, :]
-        gt_imgs = gt_imgs[0:gen_imgs_trend.shape[0], :, :]
+        gen_imgs = gen_imgs_ckpt
 
-    # gt_imgs_season = gt_imgs_season[0:10000, :, :]
-    # gt_imgs_trend = gt_imgs_trend[0:10000, :, :]
-
-    gen_imgs_season = quantile_transform_torch_gpu(gt_imgs_season, gen_imgs_season)
-    gen_imgs_trend = quantile_transform_torch_gpu(gt_imgs_trend, gen_imgs_trend)
-    gen_imgs = gen_imgs_season + gen_imgs_trend
-
-    # gt_imgs, gen_imgs = match_gen_to_gt_range(gt_imgs, gen_imgs, verbose=True)
-
-    # gt_imgs = gt_imgs[0:10000, :, :]
-
-    gen_imgs = (gen_imgs / 2.) + 0.5
-    gt_imgs = (gt_imgs / 2.) + 0.5
+    # 6) (선택) GT 전역 범위로 affine 매칭(스케일/시프트만 맞춤)
+    if APPLY_RANGE_MATCH:
+        _, gen_imgs = match_gen_to_gt_range(gt_imgs, gen_imgs, verbose=True)
 
 else:
-    if dataname == "energy":
-        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/energy_norm_truth_{length}_train.npy")
-        gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
-    elif dataname == "stock":
-        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/stock_norm_truth_{length}_train.npy")
-        gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
-    elif dataname == "sine":
-        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/sine_ground_truth_{length}_train.npy")
-        gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
-    elif dataname == "fmri":
-        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/fmri_norm_truth_{length}_train.npy")
-        gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
-    elif dataname == "mujoco":
-        gt_imgs = np.load(f"./OUTPUT/{foldername}/samples/mujoco_norm_truth_{length}_train.npy")
-        gen_imgs = np.load(f"./OUTPUT/{foldername}/ddpm_fake_{foldername}.npy")
-    else:
-        raise NotImplementedError(f"Unkown dataname: {dataname}")
+    # 단일 생성물 경로
+    gt_imgs, gen_imgs = _load_direct(foldername, dataname, length)
+    gt_imgs, gen_imgs = _align_first_dim(gt_imgs, gen_imgs)
 
-    if gen_imgs.shape[0] > gt_imgs.shape[0]:
-        gen_imgs = gen_imgs[0:gt_imgs.shape[0], :, :]
-    else:
-        gt_imgs = gt_imgs[0:gen_imgs.shape[0], :, :]
+    # (선택) 생성물 보정
+    if APPLY_MINMAX_GEN:
+        xmin, xmax = gen_imgs.min(), gen_imgs.max()
+        if xmax - xmin > 1e-6:
+            gen_imgs = 2.0 * ((gen_imgs - xmin) / (xmax - xmin)) - 1.0
+        else:
+            gen_imgs = np.zeros_like(gen_imgs)
+
+    if APPLY_QUANTILE_FIX:
+        gen_imgs = quantile_transform_torch_gpu(gt_imgs, gen_imgs)
+
+    if APPLY_RANGE_MATCH:
+        _, gen_imgs = match_gen_to_gt_range(gt_imgs, gen_imgs, verbose=True)
 
 # gen_imgs = (gen_imgs - gen_imgs.min()) / (gen_imgs.max() - gen_imgs.min())
 # gt_imgs = (gt_imgs - gt_imgs.min()) / (gt_imgs.max() - gt_imgs.min())
+
+gen_imgs = (gen_imgs / 2.) + 0.5
+gt_imgs = (gt_imgs / 2.) + 0.5
 
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='pca', compare=gt_imgs.shape[0])
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='tsne', compare=gt_imgs.shape[0])
