@@ -161,7 +161,79 @@ def quantile_transform_torch_gpu(original_data, synthetic_data):
     # 최종 결과는 CPU로 다시 이동
     return corrected_data.cpu().numpy()
 
+def _coral_align(gen: np.ndarray, gt: np.ndarray, eps=1e-6):
+    """
+    gen, gt: shape (N, L, C)  또는 (N, C)도 허용
+    전처리(분위수/범위)가 끝난 후, 2차 통계(공분산)를 gt에 맞추는 whitening→recoloring.
+    반환: gen_aligned (same shape as gen)
+    """
+    G = gen.reshape(-1, gen.shape[-1])   # (N*L, C)
+    T = gt.reshape(-1,  gt.shape[-1])    # (N*L, C)
 
+    # 중심화
+    muG = G.mean(axis=0, keepdims=True)
+    muT = T.mean(axis=0, keepdims=True)
+    Gc  = G - muG
+    Tc  = T - muT
+
+    # 공분산
+    SG = (Gc.T @ Gc) / (Gc.shape[0] - 1 + eps)  # (C, C)
+    ST = (Tc.T @ Tc) / (Tc.shape[0] - 1 + eps)
+
+    # 고유분해 (대칭 보장)
+    evalG, evecG = np.linalg.eigh(SG + eps*np.eye(SG.shape[0]))
+    evalT, evecT = np.linalg.eigh(ST + eps*np.eye(ST.shape[0]))
+
+    # whitening(G): Σ_G^{-1/2}
+    SG_inv_sqrt = (evecG @ np.diag(1.0 / np.sqrt(np.maximum(evalG, eps))) @ evecG.T)
+    # recolor(T): Σ_T^{1/2}
+    ST_sqrt     = (evecT @ np.diag(np.sqrt(np.maximum(evalT, eps))) @ evecT.T)
+
+    # CORAL 변환
+    G_whiten = Gc @ SG_inv_sqrt
+    G_recol  = G_whiten @ ST_sqrt
+
+    # 평균 복원
+    G_aligned = G_recol + muT
+    return G_aligned.reshape(gen.shape)
+
+def _blend(a: np.ndarray, b: np.ndarray, w: float):
+    """ 보수적으로 보정하려면 w(0~1)로 선형 블렌딩 """
+    return (1.0 - w) * a + w * b
+
+# [PATCH] --- Better t-SNE embedding ---
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from sklearn.manifold import TSNE
+
+def tsne_embed(X, n_pca=50, metric='cosine',
+               perplexity=80, early_exag=30,
+               lr='auto', n_iter=3000, random_state=42):
+    """
+    X: (N, L, C) → (N, L*C) flatten
+    """
+    X2 = X.reshape(len(X), -1)
+    # 1) 표준화
+    X2 = StandardScaler(with_mean=True, with_std=True).fit_transform(X2)
+    # 2) PCA + whitening
+    n_pca = min(n_pca, X2.shape[1])
+    X2 = PCA(n_components=n_pca, whiten=True, random_state=random_state).fit_transform(X2)
+    # 3) 작은 지터 추가
+    X2 = X2 + 1e-4 * np.random.randn(*X2.shape)
+    # 4) t-SNE
+    tsne = TSNE(
+        n_components=2,
+        perplexity=perplexity,
+        early_exaggeration=early_exag,
+        learning_rate=lr,
+        n_iter=n_iter,
+        metric=metric,
+        init='pca',
+        angle=0.3,
+        random_state=random_state,
+        verbose=1,
+    )
+    return tsne.fit_transform(X2)
 
 # ==============================
 # Metrics for Paper Table 3 (TS-GBench-style)
@@ -323,8 +395,8 @@ APPLY_RANGE_MATCH  = False  # gen 전체를 GT 전체 범위(min/max)에 affine 
 # ---------------------------
 # 실험 식별자
 # ---------------------------
-foldername = "test_stocks_nie3_v2_os_fal_moo"
-ckptfoldername = "Checkpoints_stocks_nie3_v2_v2_os_fal_24"
+foldername = "test_stocks_nie6"
+ckptfoldername = "Checkpoints_stocks_nie6_24"
 dataname = "stock"   # {"energy","stock","sine","fmri","mujoco"}
 length = 24
 prop = True          # True: trend/season 따로 합성하여 평가, False: 바로 단일 gen 사용
@@ -340,6 +412,26 @@ ALPHA_OPT_MODE = "sample_feature"  # {"none","scalar","feature","sample_feature"
 # - "scalar": 전체 데이터에 대한 단일 α∗
 # - "feature": 피처별 α∗ (shape: (1,1,C)), 시간과 샘플에 동일 적용
 # - "sample_feature": 샘플×피처별 α∗ (shape: (N,1,C)), 각 시계열에 맞춤
+
+# [PATCH] --- Optional: CORAL covariance alignment (after quantile/range) ---
+ENABLE_CORAL = True      # 필요할 때만 True
+CORAL_BLEND  = 0.75      # 0=미적용, 1=완전 적용. 0.25~0.5 권장
+
+ckpt = torch.load(ALPHA_CKPT_PATH, map_location="cpu") if os.path.exists(ALPHA_CKPT_PATH) else {}   # [PATCH]
+scale_meta_path = os.path.join(foldername, "gen_scale_meta.npz")
+scale_meta = np.load(scale_meta_path) if os.path.exists(scale_meta_path) else None
+global_min = ckpt.get("global_min", None)   # [PATCH]
+global_max = ckpt.get("global_max", None)   # [PATCH]
+
+# numpy 로 강제 변환   # [FIX]
+if global_min is not None:
+    global_min = np.array(global_min)
+if global_max is not None:
+    global_max = np.array(global_max)
+
+def norm_with_global(z, zmin, zmax):   # [PATCH]
+    if zmin is None or zmax is None: return z
+    return 2. * (z - zmin) / (zmax - zmin + 1e-6) - 1.
 
 def _alpha_optimal_mse(gt, t, s, mode="scalar", eps=1e-12):
     """
@@ -462,6 +554,10 @@ def _align_first_dim(a, b):
     N = min(a.shape[0], b.shape[0])
     return a[:N], b[:N]
 
+def norm_with_global_np(z, zmin, zmax):   # [PATCH]
+    if zmin is None or zmax is None: return z
+    return 2.0 * (z - zmin) / (zmax - zmin + 1e-6) - 1.0
+
 if prop:
     # 1) 로드
     gt_imgs, gt_imgs_season, gt_imgs_trend, gen_imgs_season, gen_imgs_trend = _load_prop_split(foldername, dataname, length)
@@ -506,6 +602,25 @@ if prop:
     else:
         gen_imgs_ckpt = gen_imgs_season + gen_imgs_trend
 
+    # (옵션) 전역 min/max 정규화 (학습과 동일한 스케일)   # [PATCH]
+    if global_min is not None and global_max is not None:
+        print("[eval] Normalizing GT and GEN with the SAME global min/max (from meta).")
+        if prop:
+            gt_imgs_season = norm_with_global_np(gt_imgs_season, global_min, global_max)
+            gt_imgs_trend = norm_with_global_np(gt_imgs_trend, global_min, global_max)
+            gen_imgs_season = norm_with_global_np(gen_imgs_season, global_min, global_max)
+            gen_imgs_trend = norm_with_global_np(gen_imgs_trend, global_min, global_max)
+            # α 가중합 (이미 위에서 했으면 생략 가능, 재적용 시 주의)
+            if USE_FUSION_ALPHA:
+                gate = _broadcast_alpha(alpha_loaded, gen_imgs_trend.shape)
+                gen_imgs = gate * gen_imgs_trend + (1.0 - gate) * gen_imgs_season
+            else:
+                gen_imgs = gen_imgs_trend + gen_imgs_season
+            gt_imgs = norm_with_global_np(gt_imgs, global_min, global_max)
+        else:
+            gt_imgs = norm_with_global_np(gt_imgs, global_min, global_max)
+            gen_imgs = norm_with_global_np(gen_imgs, global_min, global_max)
+
     # 5-2) (진단) 해석적 최적 α 결합도 계산해 보자
     if ALPHA_OPT_MODE != "none":
         alpha_star = _alpha_optimal_mse(gt_imgs, gen_imgs_trend, gen_imgs_season, mode=ALPHA_OPT_MODE)
@@ -526,6 +641,14 @@ if prop:
     # 6) (선택) GT 전역 범위로 affine 매칭(스케일/시프트만 맞춤)
     if APPLY_RANGE_MATCH:
         _, gen_imgs = match_gen_to_gt_range(gt_imgs, gen_imgs, verbose=True)
+
+    if ENABLE_CORAL:
+        try:
+            gen_coral = _coral_align(gen_imgs, gt_imgs)  # 2차 통계 맞춤
+            gen_imgs = _blend(gen_imgs, gen_coral, CORAL_BLEND)  # 보수적 블렌딩
+            print(f"[eval] CORAL applied with blend={CORAL_BLEND}")
+        except Exception as e:
+            print(f"[eval] CORAL skipped due to error: {e}")
 
 else:
     # 단일 생성물 경로
@@ -549,11 +672,12 @@ else:
 # gen_imgs = (gen_imgs - gen_imgs.min()) / (gen_imgs.max() - gen_imgs.min())
 # gt_imgs = (gt_imgs - gt_imgs.min()) / (gt_imgs.max() - gt_imgs.min())
 
-gen_imgs = (gen_imgs / 2.) + 0.5
-gt_imgs = (gt_imgs / 2.) + 0.5
+# gen_imgs = (gen_imgs / 2.) + 0.5
+# gt_imgs = (gt_imgs / 2.) + 0.5
 
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='pca', compare=gt_imgs.shape[0])
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='tsne', compare=gt_imgs.shape[0])
+visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='tsne_enh', compare=gt_imgs.shape[0])
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='kernel', compare=gt_imgs.shape[0])
 
 rmse_all = rmse(gen_imgs, gt_imgs)

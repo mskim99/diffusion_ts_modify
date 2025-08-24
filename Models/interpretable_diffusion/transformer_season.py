@@ -395,7 +395,7 @@ class TransformerS(nn.Module):
         self.emb = Conv_MLP(n_feat, n_embd, resid_pdrop=resid_pdrop)
         self.inverse = Conv_MLP(n_embd, n_feat, resid_pdrop=resid_pdrop)
         self.scaler = OutputScaler(n_feat, trainable=True)
-        self.final_norm = nn.BatchNorm1d(n_channel)
+        # self.final_norm = nn.BatchNorm1d(n_channel)
 
         self.idx_emb = IndexConditionedEmbedding(int(input_length // n_channel) + 1, 64)
 
@@ -447,7 +447,7 @@ class TransformerS(nn.Module):
         # print(res.min())
         # print(res.max())
 
-        res = self.final_norm(res)
+        # res = self.final_norm(res)
         res = self.scaler(res)
         # res = torch.tanh(res)
         # print(res.min())

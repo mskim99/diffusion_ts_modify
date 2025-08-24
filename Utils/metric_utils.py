@@ -2,10 +2,11 @@
 import scipy.stats
 import numpy as np
 import seaborn as sns
-import matplotlib.pyplot as plt
 
-from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
 
 import os
 
@@ -147,6 +148,43 @@ def visualization(ori_data, generated_data, analysis, compare=3000):
         plt.title('t-SNE plot')
         plt.xlabel('x-tsne')
         plt.ylabel('y_tsne')
+        plt.show()
+
+    elif analysis == 'tsne_enh':
+
+        prep_data_final = np.concatenate((prep_data, prep_data_hat), axis=0)
+        N_total = prep_data_final.shape[0]
+
+        X = prep_data_final.reshape(N_total, -1)
+
+        # 1) 표준화만 적용
+        X_std = StandardScaler().fit_transform(X)
+
+        # 2) t-SNE with near-default params
+        tsne = TSNE(
+            n_components=2,
+            perplexity=30,  # [PATCH] 기본값 유지
+            early_exaggeration=12,  # [PATCH] 기본값 유지
+            learning_rate=200,  # [PATCH] auto 대신 고정
+            n_iter=1500,  # [PATCH] 기본 1000 → 살짝 증가
+            metric='euclidean',  # [PATCH] cosine 대신 euclidean
+            init='pca',
+            random_state=42,
+            verbose=1
+        )
+        tsne_results = tsne.fit_transform(X_std)
+
+        # 3) Plotting
+        f, ax = plt.subplots(1, figsize=(6, 5))
+        plt.scatter(tsne_results[:anal_sample_no, 0], tsne_results[:anal_sample_no, 1],
+                    c=colors[:anal_sample_no], alpha=0.3, s=8, label="Original")
+        plt.scatter(tsne_results[anal_sample_no:, 0], tsne_results[anal_sample_no:, 1],
+                    c=colors[anal_sample_no:], alpha=0.3, s=8, label="Synthetic")
+        ax.legend()
+        plt.title('t-SNE (stable params)')
+        plt.xlabel('t-SNE dim 1')
+        plt.ylabel('t-SNE dim 2')
+        plt.tight_layout()
         plt.show()
 
     elif analysis == 'kernel':

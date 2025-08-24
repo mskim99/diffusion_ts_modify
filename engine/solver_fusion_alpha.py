@@ -36,6 +36,7 @@ class Trainer(object):
         self.milestone = 0
         self.args, self.config = args, config
         self.logger = logger
+        self.global_min, self.global_max = self._fit_global_minmax(self.dataloader, max_batches=50)
 
         self.results_folder = Path(config['solver']['results_folder'] + f'_{model_trend.seq_length}')
         os.makedirs(self.results_folder, exist_ok=True)
@@ -86,6 +87,9 @@ class Trainer(object):
             # [FUSION]
             'fusion_alpha': self.fusion_alpha.detach().cpu(),
             'opt_fuse': self.opt_fuse.state_dict(),
+            # [NEW] 전역 scaler 저장
+            'global_min': self.global_min.detach().cpu(),
+            'global_max': self.global_max.detach().cpu(),
         }
         torch.save(data, str(self.results_folder / f'checkpoint-{milestone}.pt'))
 
@@ -108,6 +112,31 @@ class Trainer(object):
         if 'opt_fuse' in data:
             self.opt_fuse = Adam([self.fusion_alpha], lr=self.config['solver'].get('base_lr', 1.0e-4))
             self.opt_fuse.load_state_dict(data['opt_fuse'])
+        # [NEW] 전역 scaler 복원
+        if 'global_min' in data and 'global_max' in data:
+            self.global_min = data['global_min'].to(device)
+            self.global_max = data['global_max'].to(device)
+
+    def _fit_global_minmax(self, dataloader, max_batches=50):
+        mins, maxs, seen = None, None, 0
+        for b, data in enumerate(dataloader):
+            if b >= max_batches: break
+            dt = data[0].float()  # trend
+            ds = data[1].float()  # season
+            x = dt + ds  # 전체 시계열
+            # x: (B, L, C) 가정
+            x_min = x.amin(dim=(0, 1), keepdim=True)  # (1,1,C)
+            x_max = x.amax(dim=(0, 1), keepdim=True)  # (1,1,C)
+            if mins is None:
+                mins, maxs = x_min, x_max
+            else:
+                mins = torch.minimum(mins, x_min)
+                maxs = torch.maximum(maxs, x_max)
+            seen += 1
+        # 안전장치
+        eps = 1e-6
+        maxs = torch.where((maxs - mins) < eps, mins + eps, maxs)
+        return mins.to(self.device), maxs.to(self.device)
 
     # -------------------------
     # 학습 루틴
@@ -121,7 +150,7 @@ class Trainer(object):
 
         with tqdm(initial=step, total=self.train_num_steps) as pbar:
             while step < self.train_num_steps:
-                total_loss_tr, total_loss_se, total_loss_fuse = 0., 0., 0.
+                total_loss_tr, total_loss_se, total_loss_fuse, total_loss_lvar = 0., 0., 0., 0.
 
                 for _ in range(self.gradient_accumulate_every):
                     data = next(self.dl)
@@ -129,11 +158,21 @@ class Trainer(object):
                     data_season = data[1].to(device)
                     x_gt = data_trend + data_season  # 전체 GT 시계열
                     xmin, xmax = x_gt.min(), x_gt.max()
+
+                    '''
                     def norm(z): return 2. * (z - xmin) / (xmax - xmin + 1e-6) - 1.
 
                     data_trend_n = norm(data_trend)
                     data_season_n = norm(data_season)
                     x_gt_n = norm(x_gt)
+                    '''
+
+                    def norm_feat(z, zmin, zmax):
+                        return 2. * (z - zmin) / (zmax - zmin) - 1.
+
+                    data_trend_n = norm_feat(data_trend, self.global_min, self.global_max)
+                    data_season_n = norm_feat(data_season, self.global_min, self.global_max)
+                    x_gt_n = norm_feat(x_gt, self.global_min, self.global_max)
 
                     # 모델 출력
                     loss_tr, _, _, trend_out = self.model_trend(data_trend_n, index=None, target=data_trend_n, out_result=True)
@@ -144,16 +183,25 @@ class Trainer(object):
                     fused_out = alpha * trend_out + (1 - alpha) * season_out
                     loss_fuse = F.mse_loss(fused_out, x_gt_n)
 
+                    def batch_var(x):
+                        # x: (B,L,C) -> (B, L*C)
+                        return x.reshape(x.size(0), -1).var(dim=1, unbiased=False).mean()
+
+                    lambda_fuse = 2.
+                    lambda_var = 0.05  # 너무 크게 주지 마세요
+                    l_var = (batch_var(fused_out) - batch_var(x_gt_n)).pow(2)
+
                     # 총 손실
-                    total_loss = loss_tr + loss_se + loss_fuse
+                    total_loss = loss_tr + loss_se + lambda_fuse * loss_fuse + lambda_var * l_var
                     (total_loss / self.gradient_accumulate_every).backward()
 
                     total_loss_tr += loss_tr.item()
                     total_loss_se += loss_se.item()
                     total_loss_fuse += loss_fuse.item()
+                    total_loss_lvar += l_var.item()
 
                 pbar.set_description(
-                    f'loss/ tr: {total_loss_tr:.4f}, se: {total_loss_se:.4f}, fuse: {total_loss_fuse:.4f}'
+                    f'loss/ tr: {total_loss_tr:.4f}, se: {total_loss_se:.4f}, fuse: {total_loss_fuse:.4f}, var: {total_loss_lvar:.4f}'
                 )
 
                 # 옵티마 업데이트
@@ -197,6 +245,12 @@ class Trainer(object):
         fa = torch.sigmoid(self.fusion_alpha).detach().cpu().numpy()  # (1,1,C)
         return fa * trends + (1.0 - fa) * seasons
 
+    def _denorm_feat(self, z):  # [PATCH]
+        # z: np.ndarray (N, L, C) in [-1, 1] space
+        z_t = torch.from_numpy(z).to(self.device).float()
+        out = (z_t + 1.) * 0.5 * (self.global_max - self.global_min) + self.global_min
+        return out.detach().cpu().numpy()
+
     def sample(self, num, size_every, shape=None, model_kwargs=None, cond_fn=None):
         if self.logger is not None: tic = time.time(); self.logger.log_info('Begin to sample...')
         trends, seasons = np.empty([0, shape[0], shape[1]]), np.empty([0, shape[0], shape[1]])
@@ -204,9 +258,38 @@ class Trainer(object):
         for _ in range(num):
             season = self.ema_se.ema_model.generate_mts(batch_size=bs_num, model_kwargs=model_kwargs, cond_fn=cond_fn)
             trend  = self.ema_tr.ema_model.generate_mts(batch_size=bs_num, model_kwargs=model_kwargs, cond_fn=cond_fn)
-            trends = np.row_stack([trends, trend.detach().cpu().numpy()])
-            seasons= np.row_stack([seasons,season.detach().cpu().numpy()])
+
+            tr = trend.detach().cpu().numpy()
+            se = season.detach().cpu().numpy()
+
+            # [NEW] 작은 지터(coverage ↑)
+            jitter = 0.02
+            tr = tr + jitter * np.random.randn(*tr.shape)
+            se = se + jitter * np.random.randn(*se.shape)
+
+            trends = np.row_stack([trends, tr])
+            seasons= np.row_stack([seasons, se])
             torch.cuda.empty_cache()
+
         samples = self._apply_fusion(trends, seasons)
+
+        # ---------- save with scaler meta ----------  # [PATCH]
+        out_dir = str(self.results_folder)
+        os.makedirs(out_dir, exist_ok=True)
+
+        # 1) 역정규화하여 저장(원본 스케일)  # [PATCH]
+        samples_denorm = self._denorm_feat(samples)
+        np.save(os.path.join(out_dir, f"ddpm_fake_{self.args.name}.npy"), samples_denorm)
+
+        seasons_denorm = self._denorm_feat(seasons)
+        trends_denorm = self._denorm_feat(trends)
+        np.save(os.path.join(out_dir, f"ddpm_fake_{self.args.name}_season.npy"), seasons_denorm)
+        np.save(os.path.join(out_dir, f"ddpm_fake_{self.args.name}_trend.npy"), trends_denorm)
+
+        # 2) 스케일 메타 저장  # [PATCH]
+        np.savez(os.path.join(out_dir, "gen_scale_meta.npz"),
+                 global_min=self.global_min.detach().cpu().numpy(),
+                 global_max=self.global_max.detach().cpu().numpy())
+
         if self.logger is not None: self.logger.log_info('Sampling done, time: {:.2f}'.format(time.time()-tic))
         return samples, trends, seasons
