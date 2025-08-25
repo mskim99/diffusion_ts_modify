@@ -1,7 +1,9 @@
-model:
+model_tr:
   target: Models.interpretable_diffusion.gaussian_diffusion.Diffusion_TS
   params:
+    for_trend: True
     seq_length: 24
+    gt_input_length: 10000
     feature_size: 50
     n_layer_enc: 4
     n_layer_dec: 4
@@ -16,11 +18,34 @@ model:
     resid_pd: 0.0
     kernel_size: 5
     padding_size: 2
+    use_ff: False
+
+model_se:
+  target: Models.interpretable_diffusion.gaussian_diffusion.Diffusion_TS
+  params:
+    for_trend: False
+    seq_length: 24
+    gt_input_length: 10000
+    feature_size: 50
+    n_layer_enc: 4
+    n_layer_dec: 4
+    d_model: 96  # 4 X 24
+    timesteps: 1000
+    sampling_timesteps: 1000
+    loss_type: 'l1'
+    beta_schedule: 'cosine'
+    n_heads: 4
+    mlp_hidden_times: 4
+    attn_pd: 0.0
+    resid_pd: 0.0
+    kernel_size: 5
+    padding_size: 2
+    use_ff: True
 
 solver:
   base_lr: 1.0e-5
   max_epochs: 15000
-  results_folder: ./Checkpoints_fmri
+  results_folder: ./Checkpoints_fmri_nie6
   gradient_accumulate_every: 2
   save_cycle: 1500  # max_epochs // 10
   ema:
@@ -41,11 +66,12 @@ solver:
 
 dataloader:
   train_dataset:
-    target: Utils.Data_utils.real_datasets.fMRIDataset
+    target: Utils.Data_utils.real_datasets.CustomDataset
     params:
       name: fMRI
       proportion: 1.0  # Set to rate < 1 if training conditional generation
-      data_root: ./Data/datasets/fMRI
+      trend_data: ./Data/datasets_pair/fmri_gt_trend_moo.npy
+      season_data: ./Data/datasets_pair/fmri_gt_season_moo.npy
       window: 24  # seq_length
       save2npy: True
       neg_one_to_one: True
@@ -53,11 +79,12 @@ dataloader:
       period: train
 
   test_dataset:
-    target: Utils.Data_utils.real_datasets.fMRIDataset
+    target: Utils.Data_utils.real_datasets.CustomDataset
     params:
       name: fMRI
       proportion: 0.9  # rate
-      data_root: ./Data/datasets/fMRI
+      trend_data: ./Data/datasets_pair/fmri_gt_trend_moo.npy
+      season_data: ./Data/datasets_pair/fmri_gt_season_moo.npy
       window: 24  # seq_length
       save2npy: True
       neg_one_to_one: True

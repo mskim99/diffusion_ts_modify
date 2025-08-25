@@ -201,40 +201,6 @@ def _blend(a: np.ndarray, b: np.ndarray, w: float):
     """ 보수적으로 보정하려면 w(0~1)로 선형 블렌딩 """
     return (1.0 - w) * a + w * b
 
-# [PATCH] --- Better t-SNE embedding ---
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-from sklearn.manifold import TSNE
-
-def tsne_embed(X, n_pca=50, metric='cosine',
-               perplexity=80, early_exag=30,
-               lr='auto', n_iter=3000, random_state=42):
-    """
-    X: (N, L, C) → (N, L*C) flatten
-    """
-    X2 = X.reshape(len(X), -1)
-    # 1) 표준화
-    X2 = StandardScaler(with_mean=True, with_std=True).fit_transform(X2)
-    # 2) PCA + whitening
-    n_pca = min(n_pca, X2.shape[1])
-    X2 = PCA(n_components=n_pca, whiten=True, random_state=random_state).fit_transform(X2)
-    # 3) 작은 지터 추가
-    X2 = X2 + 1e-4 * np.random.randn(*X2.shape)
-    # 4) t-SNE
-    tsne = TSNE(
-        n_components=2,
-        perplexity=perplexity,
-        early_exaggeration=early_exag,
-        learning_rate=lr,
-        n_iter=n_iter,
-        metric=metric,
-        init='pca',
-        angle=0.3,
-        random_state=random_state,
-        verbose=1,
-    )
-    return tsne.fit_transform(X2)
-
 # ==============================
 # Metrics for Paper Table 3 (TS-GBench-style)
 # MDD, ACD, SD, KD, ED, DTW
@@ -395,7 +361,7 @@ APPLY_RANGE_MATCH  = False  # gen 전체를 GT 전체 범위(min/max)에 affine 
 # ---------------------------
 # 실험 식별자
 # ---------------------------
-foldername = "test_stocks_nie6"
+foldername = "test_stocks_nie6_jt_0_1"
 ckptfoldername = "Checkpoints_stocks_nie6_24"
 dataname = "stock"   # {"energy","stock","sine","fmri","mujoco"}
 length = 24
@@ -415,7 +381,7 @@ ALPHA_OPT_MODE = "sample_feature"  # {"none","scalar","feature","sample_feature"
 
 # [PATCH] --- Optional: CORAL covariance alignment (after quantile/range) ---
 ENABLE_CORAL = True      # 필요할 때만 True
-CORAL_BLEND  = 0.75      # 0=미적용, 1=완전 적용. 0.25~0.5 권장
+CORAL_BLEND  = 0.9      # 0=미적용, 1=완전 적용. 0.25~0.5 권장
 
 ckpt = torch.load(ALPHA_CKPT_PATH, map_location="cpu") if os.path.exists(ALPHA_CKPT_PATH) else {}   # [PATCH]
 scale_meta_path = os.path.join(foldername, "gen_scale_meta.npz")
@@ -672,12 +638,12 @@ else:
 # gen_imgs = (gen_imgs - gen_imgs.min()) / (gen_imgs.max() - gen_imgs.min())
 # gt_imgs = (gt_imgs - gt_imgs.min()) / (gt_imgs.max() - gt_imgs.min())
 
-# gen_imgs = (gen_imgs / 2.) + 0.5
-# gt_imgs = (gt_imgs / 2.) + 0.5
+gen_imgs = (gen_imgs / 2.) + 0.5
+gt_imgs = (gt_imgs / 2.) + 0.5
 
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='pca', compare=gt_imgs.shape[0])
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='tsne', compare=gt_imgs.shape[0])
-visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='tsne_enh', compare=gt_imgs.shape[0])
+# visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='tsne_enh', compare=gt_imgs.shape[0])
 visualization(ori_data=gt_imgs, generated_data=gen_imgs, analysis='kernel', compare=gt_imgs.shape[0])
 
 rmse_all = rmse(gen_imgs, gt_imgs)

@@ -154,18 +154,6 @@ class Trainer(object):
                     data_season = (data_season - data_season.min()) / (data_season.max() - data_season.min())
                     data_season = 2. * data_season - 1.
 
-                    '''
-                    mu = data_trend.mean()
-                    sigma = data_trend.std()
-                    data_trend = (data_trend - mu) / sigma
-
-                    mu = data_season.mean()
-                    sigma = data_season.std()
-                    data_season = (data_season - mu) / sigma
-                    '''
-                    data_idx = data[2].to(device)
-
-                    # data = torch.swapaxes(data, 0, 1) # for textum
                     loss_tr, _, _ = self.model_trend(data_trend, index=None, target=data_trend)
                     loss_se, loss_f, _ = self.model_season(data_season, index=None, target=data_season)
                     loss_tr = loss_tr / self.gradient_accumulate_every
@@ -175,7 +163,6 @@ class Trainer(object):
                     total_loss_se += loss_se.item()
                     total_loss = total_loss_tr + total_loss_se
                     total_loss_f += loss_f.item()
-                    # total_loss_d += loss_d.item()
 
                 pbar.set_description(f'loss/ tr: {total_loss_tr:.4f}, se: {total_loss_se:.4f}, fourier: {total_loss_f:.4f}')
 

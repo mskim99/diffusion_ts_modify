@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import nn
 from einops import rearrange, reduce, repeat
 from Models.interpretable_diffusion.model_utils import LearnablePositionalEncoding, Conv_MLP, \
-    AdaLayerNorm, Transpose, GELU2, series_decomp, OutputScaler
+    AdaLayerNorm, GELU2, OutputScaler
 
 class IndexConditionedEmbedding(nn.Module):
     def __init__(self, num_classes, embedding_dim):
@@ -301,7 +301,6 @@ class DecoderBlock(nn.Module):
             nn.Dropout(resid_pdrop),
         )
 
-        # self.proj = nn.Conv1d(n_channel, n_channel * 2, 1)
         self.linear = nn.Linear(n_embd, n_feat)
 
     def forward(self, x, encoder_output, timestep, mask=None, label_emb=None, index_emb=None):
@@ -314,14 +313,8 @@ class DecoderBlock(nn.Module):
         x = x + a
         a, att = self.attn2(self.ln1_1(x, timestep), encoder_output, mask=mask)
         x = x + a
-        # x1, x2 = self.proj(x).chunk(2, dim=1)
-        # trend, season = self.trend(x1), self.seasonal(x2)
         x = self.mainblock(x)
-        # xln2 = self.ln2(x)
-        # x = x + self.mlp(xln2)
         x = self.mlp(self.ln2(x))
-        m = torch.mean(x, dim=1, keepdim=True)
-        # return x - m, self.linear(m)
         return x
 
 
@@ -395,7 +388,6 @@ class TransformerS(nn.Module):
         self.emb = Conv_MLP(n_feat, n_embd, resid_pdrop=resid_pdrop)
         self.inverse = Conv_MLP(n_embd, n_feat, resid_pdrop=resid_pdrop)
         self.scaler = OutputScaler(n_feat, trainable=True)
-        # self.final_norm = nn.BatchNorm1d(n_channel)
 
         self.idx_emb = IndexConditionedEmbedding(int(input_length // n_channel) + 1, 64)
 
@@ -415,13 +407,8 @@ class TransformerS(nn.Module):
 
     def forward(self, input, t, index=None, padding_masks=None, return_res=False):
 
-        # print('printing')
         emb = self.emb(input)
-        # print(emb.min())
-        # print(emb.max())
         inp_enc = self.pos_enc(emb)
-        # print(inp_enc.min())
-        # print(inp_enc.max())
 
         if index is not None:
             index_emb = self.idx_emb(index)  # shape: [B, D]
@@ -429,39 +416,11 @@ class TransformerS(nn.Module):
             index_emb = None
 
         enc_cond = self.encoder(inp_enc, t, index_emb=index_emb, padding_masks=padding_masks)
-        # print(enc_cond.min())
-        # print(enc_cond.max())
-
         enc_cond = self.final_encoder_norm(enc_cond)
-        # print(enc_cond.min())
-        # print(enc_cond.max())
-
         inp_dec = self.pos_dec(emb)
-        # print(inp_dec.min())
-        # print(inp_dec.max())
         output = self.decoder(inp_dec, t, enc_cond, index_emb=index_emb, padding_masks=padding_masks)
-        # print(output.min())
-        # print(output.max())
-
         res = self.inverse(output)
-        # print(res.min())
-        # print(res.max())
 
-        # res = self.final_norm(res)
         res = self.scaler(res)
-        # res = torch.tanh(res)
-        # print(res.min())
-        # print(res.max())
-
-        # res = self.combine(mean) + res
-        '''
-        combined_mean = torch.mean(mean, dim=1, keepdim=True)
-        print(combined_mean.min())
-        print(combined_mean.max())
-        res = combined_mean + res
-        print(res.min())
-        print(res.max())
-        '''
-        # res = torch.tanh(res)
 
         return res

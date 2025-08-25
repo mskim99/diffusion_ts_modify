@@ -20,7 +20,6 @@ def cycle(dl):
         for data in dl:
             yield data
 
-
 class Trainer(object):
     def __init__(self, config, args, model_trend, model_season, dataloader, logger=None):
         super().__init__()
@@ -64,15 +63,12 @@ class Trainer(object):
         self.log_frequency = 100
 
         # -------------------------
-        # [FUSION] 학습 가능한 게이트 α
+        # [FUSION] Learnable Gate Value α
         # -------------------------
         C = model_trend.feature_size   # or channel dimension
         self.fusion_alpha = nn.Parameter(torch.zeros(1, 1, C, device=self.device))
         self.opt_fuse = Adam([self.fusion_alpha], lr=start_lr, betas=[0.9, 0.96])
 
-    # -------------------------
-    # 저장 / 로드
-    # -------------------------
     def save(self, milestone, verbose=False):
         if self.logger is not None and verbose:
             self.logger.log_info('Save current model to {}'.format(str(self.results_folder / f'checkpoint-{milestone}.pt')))
@@ -84,10 +80,8 @@ class Trainer(object):
             'model_season': self.model_season.state_dict(),
             'ema_season': self.ema_se.state_dict(),
             'opt_season': self.opt_se.state_dict(),
-            # [FUSION]
             'fusion_alpha': self.fusion_alpha.detach().cpu(),
             'opt_fuse': self.opt_fuse.state_dict(),
-            # [NEW] 전역 scaler 저장
             'global_min': self.global_min.detach().cpu(),
             'global_max': self.global_max.detach().cpu(),
         }
@@ -157,15 +151,6 @@ class Trainer(object):
                     data_trend = data[0].to(device)
                     data_season = data[1].to(device)
                     x_gt = data_trend + data_season  # 전체 GT 시계열
-                    xmin, xmax = x_gt.min(), x_gt.max()
-
-                    '''
-                    def norm(z): return 2. * (z - xmin) / (xmax - xmin + 1e-6) - 1.
-
-                    data_trend_n = norm(data_trend)
-                    data_season_n = norm(data_season)
-                    x_gt_n = norm(x_gt)
-                    '''
 
                     def norm_feat(z, zmin, zmax):
                         return 2. * (z - zmin) / (zmax - zmin) - 1.
@@ -238,9 +223,6 @@ class Trainer(object):
         if self.logger is not None:
             self.logger.log_info('Training done, time: {:.2f}'.format(time.time() - tic))
 
-    # -------------------------
-    # [FUSION] 적용
-    # -------------------------
     def _apply_fusion(self, trends, seasons):
         fa = torch.sigmoid(self.fusion_alpha).detach().cpu().numpy()  # (1,1,C)
         return fa * trends + (1.0 - fa) * seasons
@@ -263,7 +245,7 @@ class Trainer(object):
             se = season.detach().cpu().numpy()
 
             # [NEW] 작은 지터(coverage ↑)
-            jitter = 0.02
+            jitter = 0.2
             tr = tr + jitter * np.random.randn(*tr.shape)
             se = se + jitter * np.random.randn(*se.shape)
 
